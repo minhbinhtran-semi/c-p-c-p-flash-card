@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile data and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "publicNickname": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "lastActiveAt": { "type": "number" },
+        "profileVisibility": { "type": "string", "enum": ["public", "private"] },
+        "rankedTier": { "type": "string" },
+        "rp": { "type": "number" },
+        "achievements": { "type": "array" }
+      },
+      "required": ["uid", "publicNickname", "createdAt", "lastActiveAt"]
+    },
+    "Deck": {
+      "title": "Deck",
+      "description": "Vocabulary deck owned by user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "name", "createdAt"]
+    },
+    "VocabularyItem": {
+      "title": "VocabularyItem",
+      "description": "Vocabulary card in a deck",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "deckId": { "type": "string" },
+        "englishWord": { "type": "string" },
+        "vietnameseDefinition": { "type": "string" },
+        "partOfSpeech": { "type": "string" },
+        "exampleSentence": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "deckId", "englishWord", "vietnameseDefinition"]
+    },
+    "LearningSession": {
+      "title": "LearningSession",
+      "description": "Completed study session record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "deckId": { "type": "string" },
+        "mode": { "type": "string" },
+        "startTime": { "type": "number" },
+        "endTime": { "type": "number" },
+        "totalCards": { "type": "number" },
+        "correctCards": { "type": "number" }
+      },
+      "required": ["id", "deckId", "mode", "startTime"]
+    },
+    "XpEvent": {
+      "title": "XpEvent",
+      "description": "XP ledger transaction event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "amount": { "type": "number" },
+        "source": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "amount", "source"]
+    },
+    "SrsState": {
+      "title": "SrsState",
+      "description": "Spaced repetition state for a word",
+      "type": "object",
+      "properties": {
+        "wordId": { "type": "string" },
+        "interval": { "type": "number" },
+        "easeFactor": { "type": "number" },
+        "repetitions": { "type": "number" },
+        "dueDate": { "type": "number" },
+        "state": { "type": "string" }
+      },
+      "required": ["wordId", "dueDate", "state"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/profile/data": {
+      "schema": "UserProfile",
+      "description": "User profile information"
+    },
+    "/users/{userId}/decks/{deckId}": {
+      "schema": "Deck",
+      "description": "User vocabulary decks"
+    },
+    "/users/{userId}/vocabulary/{vocabId}": {
+      "schema": "VocabularyItem",
+      "description": "User vocabulary items"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "LearningSession",
+      "description": "User study sessions"
+    },
+    "/users/{userId}/xpEvents/{eventId}": {
+      "schema": "XpEvent",
+      "description": "User XP ledger transactions"
+    },
+    "/users/{userId}/srsStates/{wordId}": {
+      "schema": "SrsState",
+      "description": "User spaced repetition state per vocabulary word"
+    }
+  }
+}

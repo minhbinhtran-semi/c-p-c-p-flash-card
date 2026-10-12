@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user owns the document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User private data tree and subcollections
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      // Allow public profile read for friends/leaderboard if profileVisibility is public
+      match /profile/{docId} {
+        allow read: if isOwner(userId) || (isAuthenticated() && resource.data.profileVisibility == 'public');
+        allow write: if isOwner(userId);
+      }
+
+      match /{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Health check / connection test document
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Authoritative ranked profiles (read-only for owner, client writes disabled to ensure secure backend-only RP updates)
+    match /rankedProfiles/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false;
+    }
+
+    // Authoritative ranked matches audit records (read-only for match owner, client writes strictly prohibited)
+    match /rankedMatches/{matchId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Authoritative ranked question bank (server-side only, client reads and writes strictly prohibited)
+    match /rankedQuestionBank/{questionId} {
+      allow read, write: if false;
+    }
+
+    // Default deny all other reads/writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

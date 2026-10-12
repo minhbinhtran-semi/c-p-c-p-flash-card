@@ -1,0 +1,8 @@
+{
+  "name": "Cạp cạp",
+  "description": "Học không vào thì cạp. Nền tảng học từ vựng tiếng Anh tối giản với linh vật Cạp Tổng xéo xắt.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

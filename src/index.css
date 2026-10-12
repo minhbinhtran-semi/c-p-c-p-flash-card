@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Be Vietnam Pro', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --color-bg: #FAFBF8;
+    --color-surface: #FFFFFF;
+    --color-text: #1D2420;
+    --color-deep-green: #173B2B;
+    --color-accent-green: #268A59;
+    --color-light-green: #E5F3E9;
+    --color-muted: #69756D;
+    --color-border: #E6EBE6;
+    --color-gold: #D9AA54;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg);
+    color: var(--color-text);
+  }
+}
+
+/* Perspective utilities for 3D Flashcard flip */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.transform-style-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
