@@ -8,10 +8,13 @@ import {
   CheckCircle2,
   AlertCircle,
   Sparkles,
+  Trophy,
+  ShieldCheck,
 } from 'lucide-react';
 import { AppSettings, MascotTone } from '../../types';
 import { MASCOT_TONE_LABELS } from '../../data/dialogues';
 import { CapTongMascot } from '../mascot/CapTongMascot';
+import type { UserProfile } from '../../services/cloudSync';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -20,6 +23,11 @@ interface SettingsViewProps {
   onImportJson: (fileContent: string) => void;
   onClearAllData: () => void;
   onResetSeedData: () => void;
+  userProfile?: UserProfile | null;
+  totalXp?: number;
+  streakDays?: number;
+  onToggleShareLeaderboard?: (enabled: boolean) => Promise<void>;
+  onOpenAuth?: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -29,9 +37,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onImportJson,
   onClearAllData,
   onResetSeedData,
+  userProfile,
+  totalXp = 0,
+  streakDays = 0,
+  onToggleShareLeaderboard,
+  onOpenAuth,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importStatus, setImportStatus] = useState<{ success?: boolean; message?: string } | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
 
   const handleToneChange = (tone: MascotTone) => {
     onUpdateSettings({
@@ -188,7 +203,95 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </div>
 
-      {/* 3. Data Backup, Export & Import */}
+      {/* 3. Milestone 4.3A: Friends Leaderboard Opt-in Setting */}
+      <div className="bg-white border border-[#E6EBE6] rounded-2xl p-6 shadow-xs space-y-4">
+        <div className="flex items-center justify-between border-b border-[#E6EBE6] pb-3">
+          <div>
+            <h2 className="text-base font-bold text-[#173B2B] flex items-center gap-2">
+              <Trophy className="w-4 h-4 text-[#268A59]" />
+              <span>Bảng Phong Thần & Quyền Riêng Tư</span>
+            </h2>
+            <p className="text-xs text-[#69756D] mt-0.5">
+              Tuỳ chọn tự nguyện chia sẻ tiến độ học tập tối giản với hội bạn bè
+            </p>
+          </div>
+        </div>
+
+        <div className="p-4 bg-[#FAFBF8] border border-[#E6EBE6] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-[#173B2B]">
+                Hiển thị thành tích của tôi trên Bảng Phong Thần
+              </span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                userProfile?.shareLeaderboard
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-gray-100 text-gray-600'
+              }`}>
+                {userProfile?.shareLeaderboard ? 'Đang Bật' : 'Mặc định: TẮT'}
+              </span>
+            </div>
+            <p className="text-xs text-[#69756D] leading-relaxed max-w-xl">
+              Khi bật, biệt hiệu công khai, tổng Nọc XP ({totalXp} XP) và chuỗi ngày ({streakDays} ngày) sẽ được cập nhật trên Bảng Phong Thần. Khi tắt, thông tin công khai của bạn sẽ bị gỡ bỏ ngay lập tức.
+            </p>
+          </div>
+
+          <div className="shrink-0 flex items-center gap-3">
+            {userProfile ? (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(userProfile.shareLeaderboard)}
+                disabled={shareLoading}
+                onClick={async () => {
+                  if (!onToggleShareLeaderboard) return;
+                  setShareError(null);
+                  setShareLoading(true);
+                  try {
+                    await onToggleShareLeaderboard(!userProfile.shareLeaderboard);
+                  } catch (err: any) {
+                    setShareError(err.message || 'Không thể cập nhật quyền chia sẻ.');
+                  } finally {
+                    setShareLoading(false);
+                  }
+                }}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  userProfile.shareLeaderboard ? 'bg-[#268A59]' : 'bg-gray-300'
+                } ${shareLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                    userProfile.shareLeaderboard ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            ) : (
+              <button
+                onClick={onOpenAuth}
+                className="px-3.5 py-1.5 text-xs font-semibold text-[#173B2B] bg-[#E5F3E9] hover:bg-[#BDE5C8] border border-[#BDE5C8] rounded-xl transition-colors"
+              >
+                Đăng nhập để bật
+              </button>
+            )}
+          </div>
+        </div>
+
+        {shareError && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{shareError}</span>
+          </div>
+        )}
+
+        <div className="flex items-start gap-2 p-3 bg-white border border-[#E6EBE6] rounded-xl text-xs text-[#69756D]">
+          <ShieldCheck className="w-4 h-4 text-[#268A59] shrink-0 mt-0.5" />
+          <p>
+            <strong>Cam kết bảo mật dữ liệu:</strong> Bộ từ vựng tự tạo, danh sách từ vựng, tài khoản email, lịch sử các buổi học và đánh giá câu AI luôn được lưu trữ hoàn toàn riêng tư. Không một ai khác có quyền đọc dữ liệu riêng của bạn.
+          </p>
+        </div>
+      </div>
+
+      {/* 4. Data Backup, Export & Import */}
       <div className="bg-white border border-[#E6EBE6] rounded-2xl p-6 shadow-xs space-y-4">
         <h2 className="text-base font-bold text-[#173B2B] border-b border-[#E6EBE6] pb-3">
           Sao lưu và Khôi phục dữ liệu

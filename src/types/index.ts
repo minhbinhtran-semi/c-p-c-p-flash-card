@@ -2,7 +2,7 @@ export type MascotTone = 'puppy' | 'cheeky' | 'boss';
 
 export type MascotExpression = 'idle' | 'happy' | 'confused' | 'smug';
 
-export type StudyReviewRating = 'forgot' | 'hard' | 'remembered';
+export type StudyReviewRating = 'forgot' | 'hard' | 'remembered' | 'easy';
 
 export interface Deck {
   id: string;
@@ -103,6 +103,7 @@ export interface StudySessionSummary {
   rememberedCount: number;
   hardCount: number;
   forgotCount: number;
+  easyCount?: number;
   timestamp: number;
 }
 
@@ -205,10 +206,9 @@ export interface LeaderboardEntry {
   rankPosition: number;
   nickname: string;
   avatarUrl: string;
-  xp?: number;
-  rp: number; // backward compatibility
-  streakDays?: number;
-  wordsLearned?: number;
+  xp: number;
+  streakDays: number;
+  rp?: number;
   tierIndex: number;
   tierName: string;
   division: 'III' | 'II' | 'I' | '';

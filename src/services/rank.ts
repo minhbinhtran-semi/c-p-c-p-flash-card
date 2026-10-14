@@ -5,13 +5,12 @@ export interface RankDetail {
   fullName: string;
   minXp: number;
   maxXp: number;
+  minRp?: number;
+  maxRp?: number;
   badge: string;
   color: string;
   description: string;
   mascotTaunt: string;
-  // Backwards compatibility alias
-  minRp?: number;
-  maxRp?: number;
 }
 
 export interface BaseTier {
@@ -130,214 +129,99 @@ export const BASE_TIERS: BaseTier[] = [
   }
 ];
 
-// Configuration parameters
-export const INITIAL_DIVISION_XP = 150;
-export const XP_INCREMENT_PER_TIER = 40;
-export const DIVISIONS_PER_TIER = 3;
+export function getAllRanks(): RankDetail[] {
+  const ranks: RankDetail[] = [];
+  let cumulativeXp = 0;
 
-/**
- * Returns the XP width of each division for a tier (0 to 13).
- * Tier 0 (Rẻ Jack): 150 XP
- * Tier 1 (Chim Bé): 190 XP
- * ...
- */
-export function getTierDivisionWidth(tierIndex: number): number {
-  if (tierIndex < 0 || tierIndex >= 14) return 0;
-  return INITIAL_DIVISION_XP + tierIndex * XP_INCREMENT_PER_TIER;
-}
-
-// Precomputed tier thresholds for fast lookups
-interface InternalDivisionInfo {
-  tierIndex: number;
-  tierName: string;
-  division: 'III' | 'II' | 'I' | '';
-  fullName: string;
-  minXp: number;
-  maxXp: number;
-  divisionWidth: number;
-}
-
-const PRECOMPUTED_DIVISIONS: InternalDivisionInfo[] = [];
-let accumulatedXp = 0;
-
-for (let t = 0; t < 14; t++) {
-  const width = getTierDivisionWidth(t);
-  const divs: Array<'III' | 'II' | 'I'> = ['III', 'II', 'I'];
-  for (let d = 0; d < 3; d++) {
-    const minXp = accumulatedXp;
-    const maxXp = minXp + width - 1;
-    PRECOMPUTED_DIVISIONS.push({
-      tierIndex: t,
-      tierName: BASE_TIERS[t].name,
-      division: divs[d],
-      fullName: `${BASE_TIERS[t].name} ${divs[d]}`,
-      minXp,
-      maxXp,
-      divisionWidth: width,
+  for (let i = 0; i < 14; i++) {
+    const tier = BASE_TIERS[i];
+    const divisionWidth = 150 + i * 40;
+    const divs: Array<'III' | 'II' | 'I'> = ['III', 'II', 'I'];
+    divs.forEach((div) => {
+      const minXp = cumulativeXp;
+      const maxXp = minXp + divisionWidth - 1;
+      ranks.push({
+        tierIndex: i,
+        tierName: tier.name,
+        division: div,
+        fullName: `${tier.name} ${div}`,
+        minXp,
+        maxXp,
+        minRp: minXp,
+        maxRp: maxXp,
+        badge: tier.badge,
+        color: tier.color,
+        description: tier.description,
+        mascotTaunt: tier.mascotTaunt,
+      });
+      cumulativeXp += divisionWidth;
     });
-    accumulatedXp += width;
-  }
-}
-
-// Đại Đế Cạp Cạp threshold
-export const MAX_TIER_XP_THRESHOLD = accumulatedXp; // 17,220 XP
-
-/**
- * Calculates rank directly from lifetime Nọc XP.
- * New player at 0 XP starts at Rẻ Jack III.
- */
-export function getRankFromXP(xp: number): RankDetail {
-  const safeXp = Math.max(0, Math.round(xp || 0));
-
-  // Top tier: Đại Đế Cạp Cạp
-  if (safeXp >= MAX_TIER_XP_THRESHOLD) {
-    const topTier = BASE_TIERS[14];
-    return {
-      tierIndex: 14,
-      tierName: topTier.name,
-      division: '',
-      fullName: topTier.name,
-      minXp: MAX_TIER_XP_THRESHOLD,
-      maxXp: 9999999,
-      badge: topTier.badge,
-      color: topTier.color,
-      description: topTier.description,
-      mascotTaunt: topTier.mascotTaunt,
-      minRp: MAX_TIER_XP_THRESHOLD,
-      maxRp: 9999999,
-    };
   }
 
-  // Find division in precomputed ranges
-  const found = PRECOMPUTED_DIVISIONS.find(
-    (div) => safeXp >= div.minXp && safeXp <= div.maxXp
-  ) || PRECOMPUTED_DIVISIONS[0];
+  // 15th tier: Đại Đế Cạp Cạp
+  const topTier = BASE_TIERS[14];
+  const minXp = cumulativeXp;
+  ranks.push({
+    tierIndex: 14,
+    tierName: topTier.name,
+    division: '',
+    fullName: topTier.name,
+    minXp,
+    maxXp: 999999,
+    minRp: minXp,
+    maxRp: 999999,
+    badge: topTier.badge,
+    color: topTier.color,
+    description: topTier.description,
+    mascotTaunt: topTier.mascotTaunt,
+  });
 
-  const tier = BASE_TIERS[found.tierIndex];
-
-  return {
-    tierIndex: found.tierIndex,
-    tierName: tier.name,
-    division: found.division,
-    fullName: found.fullName,
-    minXp: found.minXp,
-    maxXp: found.maxXp,
-    badge: tier.badge,
-    color: tier.color,
-    description: tier.description,
-    mascotTaunt: tier.mascotTaunt,
-    minRp: found.minXp,
-    maxRp: found.maxXp,
-  };
+  return ranks;
 }
 
-/**
- * Returns progression details within the current division.
- */
-export function getRankProgressInfo(xp: number) {
-  const safeXp = Math.max(0, Math.round(xp || 0));
-  const currentRank = getRankFromXP(safeXp);
-
-  if (currentRank.tierIndex >= 14) {
-    return {
-      currentRank,
-      nextRankName: 'Đỉnh cao tối thượng',
-      xpEarnedInDivision: safeXp - MAX_TIER_XP_THRESHOLD,
-      xpNeededForNextDivision: 0,
-      totalDivisionWidth: 0,
-      percentProgress: 100,
-      isMaxTier: true,
-    };
+export function getRankFromXP(totalXP: number): RankDetail {
+  const safeXp = Math.max(0, totalXP);
+  const ranks = getAllRanks();
+  for (let i = ranks.length - 1; i >= 0; i--) {
+    if (safeXp >= ranks[i].minXp) {
+      return ranks[i];
+    }
   }
-
-  const earnedInDivision = safeXp - currentRank.minXp;
-  const totalDivisionWidth = currentRank.maxXp - currentRank.minXp + 1;
-  const xpNeeded = Math.max(0, totalDivisionWidth - earnedInDivision);
-  const percentProgress = Math.min(
-    100,
-    Math.max(0, Math.round((earnedInDivision / totalDivisionWidth) * 100))
-  );
-
-  const nextRankName = getNextRank(safeXp);
-
-  return {
-    currentRank,
-    nextRankName,
-    xpEarnedInDivision: earnedInDivision,
-    xpNeededForNextDivision: xpNeeded,
-    totalDivisionWidth,
-    percentProgress,
-    isMaxTier: false,
-  };
+  return ranks[0];
 }
 
-/**
- * Percentage progress in current division (0 - 100).
- */
+// Compatibility alias for old RP calls
+export function getRankFromRP(rp: number): RankDetail {
+  return getRankFromXP(rp);
+}
+
 export function getDivisionProgress(xp: number): number {
-  return getRankProgressInfo(xp).percentProgress;
+  const safeXp = Math.max(0, xp);
+  const current = getRankFromXP(safeXp);
+  if (current.tierIndex >= 14) return 100;
+  const divisionWidth = 150 + current.tierIndex * 40;
+  const xpIntoDivision = safeXp - current.minXp;
+  return Math.min(100, Math.max(0, (xpIntoDivision / divisionWidth) * 100));
 }
 
-/**
- * Returns next rank name.
- */
 export function getNextRank(xp: number): string {
   const current = getRankFromXP(xp);
   if (current.tierIndex >= 14) return 'Đỉnh cao tối thượng';
   if (current.division === 'III') return `${current.tierName} II`;
   if (current.division === 'II') return `${current.tierName} I`;
   const nextTier = BASE_TIERS[current.tierIndex + 1];
-  return nextTier ? (nextTier.name === 'Đại Đế Cạp Cạp' ? nextTier.name : `${nextTier.name} III`) : 'Đại Đế Cạp Cạp';
+  return nextTier ? `${nextTier.name} III` : 'Đại Đế Cạp Cạp';
 }
 
-/**
- * Returns XP needed for the next division.
- */
 export function getXPRequiredForPromotion(xp: number): number {
-  return getRankProgressInfo(xp).xpNeededForNextDivision;
+  const safeXp = Math.max(0, xp);
+  const current = getRankFromXP(safeXp);
+  if (current.tierIndex >= 14) return 0;
+  const divisionWidth = 150 + current.tierIndex * 40;
+  const xpIntoDivision = safeXp - current.minXp;
+  return Math.max(0, divisionWidth - xpIntoDivision);
 }
 
-/**
- * Returns all ranks across the ladder.
- */
-export function getAllRanks(): RankDetail[] {
-  const ranks: RankDetail[] = PRECOMPUTED_DIVISIONS.map((div) => {
-    const tier = BASE_TIERS[div.tierIndex];
-    return {
-      tierIndex: div.tierIndex,
-      tierName: tier.name,
-      division: div.division,
-      fullName: div.fullName,
-      minXp: div.minXp,
-      maxXp: div.maxXp,
-      badge: tier.badge,
-      color: tier.color,
-      description: tier.description,
-      mascotTaunt: tier.mascotTaunt,
-      minRp: div.minXp,
-      maxRp: div.maxXp,
-    };
-  });
-
-  const topTier = BASE_TIERS[14];
-  ranks.push({
-    tierIndex: 14,
-    tierName: topTier.name,
-    division: '',
-    fullName: topTier.name,
-    minXp: MAX_TIER_XP_THRESHOLD,
-    maxXp: 9999999,
-    badge: topTier.badge,
-    color: topTier.color,
-    description: topTier.description,
-    mascotTaunt: topTier.mascotTaunt,
-    minRp: MAX_TIER_XP_THRESHOLD,
-    maxRp: 9999999,
-  });
-
-  return ranks;
+export function getRPRequiredForPromotion(rp: number): number {
+  return getXPRequiredForPromotion(rp);
 }
-
-// Backwards compatibility aliases during transition
-export const getRankFromRP = getRankFromXP;
-export const getRPRequiredForPromotion = getXPRequiredForPromotion;

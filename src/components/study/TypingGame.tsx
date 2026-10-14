@@ -18,6 +18,7 @@ import { recordGameWordResult, saveLearningSession } from '../../services/storag
 import { recordXpReward } from '../../services/progression';
 import { CapTongMascot } from '../mascot/CapTongMascot';
 import { getRandomDialogue } from '../../data/dialogues';
+import { samplePracticeVocabulary } from '../../utils/practiceSampling';
 
 interface TypingGameProps {
   decks: Deck[];
@@ -109,7 +110,8 @@ export const TypingGame: React.FC<TypingGameProps> = ({
   const initGameWithWords = useCallback(
     (words: VocabularyItem[]) => {
       if (words.length === 0) return;
-      const shuffled = [...words].sort(() => Math.random() - 0.5);
+      const sampled = samplePracticeVocabulary(words);
+      const shuffled = [...sampled].sort(() => Math.random() - 0.5);
 
       setQuestionList(shuffled);
       setCurrentIndex(0);

@@ -198,7 +198,7 @@ export function recordStudyReview(deckId: string, wordId: string, result: StudyR
     const item = vocab[itemIdx];
     const newCount = (item.reviewCount || 0) + 1;
     let newLevel: 'new' | 'learning' | 'mastered' = 'learning';
-    if (result === 'remembered') {
+    if (result === 'remembered' || result === 'easy') {
       newLevel = newCount >= 3 ? 'mastered' : 'learning';
     } else if (result === 'forgot') {
       newLevel = 'learning';

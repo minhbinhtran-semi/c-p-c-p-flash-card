@@ -17,6 +17,7 @@ export interface UserProfile {
   rankedTier?: string;
   rp?: number;
   achievements?: string[];
+  shareLeaderboard?: boolean;
 }
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'error' | 'idle';
@@ -35,7 +36,8 @@ export async function fetchOrCreateUserProfile(firebaseUser: { uid: string; disp
     profileVisibility: 'public',
     rankedTier: 'Đồng Cạp',
     rp: 0,
-    achievements: ['welcome_cadre']
+    achievements: ['welcome_cadre'],
+    shareLeaderboard: false, // Milestone 4.3A: Default: OFF
   };
 
   try {
@@ -45,7 +47,11 @@ export async function fetchOrCreateUserProfile(firebaseUser: { uid: string; disp
     if (snap.exists()) {
       const data = snap.data() as UserProfile;
       await setDoc(userRef, { lastActiveAt: now }, { merge: true }).catch(() => {});
-      return { ...data, lastActiveAt: now };
+      return {
+        ...data,
+        lastActiveAt: now,
+        shareLeaderboard: data.shareLeaderboard ?? false,
+      };
     } else {
       await setDoc(userRef, defaultProfile).catch(() => {});
       return defaultProfile;

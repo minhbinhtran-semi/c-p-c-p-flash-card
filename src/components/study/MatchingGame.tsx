@@ -16,6 +16,7 @@ import { recordGameWordResult, saveLearningSession } from '../../services/storag
 import { recordXpReward } from '../../services/progression';
 import { CapTongMascot } from '../mascot/CapTongMascot';
 import { getRandomDialogue } from '../../data/dialogues';
+import { samplePracticeVocabulary } from '../../utils/practiceSampling';
 
 interface MatchingGameProps {
   decks: Deck[];
@@ -161,10 +162,11 @@ export const MatchingGame: React.FC<MatchingGameProps> = ({
   // Start / Restart entire game
   const initializeGame = useCallback(
     (deckId: string) => {
-      const words = vocabulary.filter((v) => v.deckId === deckId);
-      if (words.length < 2) return;
+      const rawWords = vocabulary.filter((v) => v.deckId === deckId);
+      const sampled = samplePracticeVocabulary(rawWords);
+      if (sampled.length < 2) return;
 
-      const shuffled = [...words].sort(() => Math.random() - 0.5);
+      const shuffled = [...sampled].sort(() => Math.random() - 0.5);
       const calculatedTotalRounds = Math.ceil(shuffled.length / MAX_PAIRS_PER_ROUND);
 
       setTotalRounds(calculatedTotalRounds);

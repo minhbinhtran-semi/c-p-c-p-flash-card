@@ -8,11 +8,43 @@ import {
 } from '../types';
 import { getLocalDateString } from './progression';
 
-export const SRS_INTERVALS = [0, 1, 3, 7, 14, 30, 60, 120]; // Days for stages 0 to 7
+export const MINUTE_MS = 60 * 1000;
+export const HOUR_MS = 60 * MINUTE_MS;
+export const DAY_MS = 24 * HOUR_MS;
+
+export const SRS_INTERVALS_MS = [
+  1 * DAY_MS,   // Stage 0 -> 1 day
+  1 * DAY_MS,   // Stage 1
+  3 * DAY_MS,   // Stage 2
+  7 * DAY_MS,   // Stage 3
+  14 * DAY_MS,  // Stage 4
+  30 * DAY_MS,  // Stage 5
+  60 * DAY_MS,  // Stage 6
+  120 * DAY_MS, // Stage 7
+];
+
+export const SRS_INTERVALS = [0, 1, 3, 7, 14, 30, 60, 120]; // Legacy days array for compatibility
+
+export type SrsReviewOutcome = 'forgot' | 'hard' | 'remembered' | 'easy';
+
+export interface SrsIntervalPreview {
+  outcome: SrsReviewOutcome;
+  intervalMs: number;
+  label: string;
+  targetTimestamp: number;
+}
+
+export interface SrsQueueStats {
+  dueNowCount: number;
+  overdueCount: number;
+  upcomingCount: number;
+  nextScheduledTime?: number;
+}
 
 export interface WordSrsState {
   wordId: string;
   stage: number; // 0 to 7
+  subStep?: '10m' | '1h' | 'day'; // Early learning sub-steps
   learningStatus: 'new' | 'learning' | 'improving' | 'stable' | 'mastered';
   difficultyStatus: 'Từ mới' | 'Đang vật lộn' | 'Đang tiến bộ' | 'Nhớ khá ổn' | 'Đã thuần phục';
   lastReviewAt?: number;
@@ -58,10 +90,10 @@ export function getWordSrsState(wordId: string): WordSrsState {
   const all = getAllSrsStates();
   if (all[wordId]) return all[wordId];
 
-  // Default initial state for a word
   return {
     wordId,
     stage: 0,
+    subStep: 'day',
     learningStatus: 'new',
     difficultyStatus: 'Từ mới',
     consecutiveStrongRecallDays: 0,
@@ -77,14 +109,11 @@ export function getWordSrsState(wordId: string): WordSrsState {
       meaning_ai: { attempts: 0, correct: 0, incorrect: 0 },
       sentence_ai: { attempts: 0, correct: 0, incorrect: 0 },
     },
-    schedulingVersion: 1,
+    schedulingVersion: 2,
     processedReviewEventIds: [],
   };
 }
 
-/**
- * Reconstructs or updates word learning statistics and SRS scheduling based on authoritative review records and session history.
- */
 export function computeWordStatsAndSchedule(
   wordId: string,
   reviews: ReviewRecord[],
@@ -108,7 +137,6 @@ export function computeWordStatsAndSchedule(
     sentence_ai: { attempts: 0, correct: 0, incorrect: 0 },
   };
 
-  // Inspect sessions for detailed mode stats & strong recall evidence
   sessions.forEach((s) => {
     s.wordResults.forEach((wr) => {
       if (wr.wordId === wordId) {
@@ -127,7 +155,7 @@ export function computeWordStatsAndSchedule(
           if (modeStats[mode]) modeStats[mode].correct++;
         } else if (wr.result === 'partially_correct') {
           partiallyCorrectAttempts++;
-          if (modeStats[mode]) modeStats[mode].correct++; // count partial as mild success
+          if (modeStats[mode]) modeStats[mode].correct++;
         } else {
           incorrectAttempts++;
           if (modeStats[mode]) modeStats[mode].incorrect++;
@@ -139,14 +167,13 @@ export function computeWordStatsAndSchedule(
     });
   });
 
-  // Fallback to reviews if sessions are empty
   if (totalAttempts === 0 && wordReviews.length > 0) {
     totalAttempts = wordReviews.length;
     wordReviews.forEach((r) => {
       if (!lastStudiedTimestamp || r.timestamp > lastStudiedTimestamp) {
         lastStudiedTimestamp = r.timestamp;
       }
-      if (r.result === 'remembered' || r.result === 'hard') {
+      if (r.result === 'remembered' || r.result === 'easy' || r.result === 'hard') {
         correctAttempts++;
       } else {
         incorrectAttempts++;
@@ -161,7 +188,6 @@ export function computeWordStatsAndSchedule(
   const lastStudiedDate = lastStudiedTimestamp ? getLocalDateString(lastStudiedTimestamp) : undefined;
   const lastIncorrectDate = lastIncorrectTimestamp ? getLocalDateString(lastIncorrectTimestamp) : undefined;
 
-  // Difficulty Classification based on Milestone 2.2 rules
   let difficultyStatus: WordSrsState['difficultyStatus'] = 'Từ mới';
   let learningStatus: WordSrsState['learningStatus'] = 'new';
 
@@ -207,22 +233,6 @@ export interface ClassifyEvidenceParams {
   strictVerification?: boolean;
 }
 
-/**
- * Centralized evaluation of learning evidence per Milestone 2.2 and 4.1 rules.
- * Shared between SRS stage scheduling and Achievement unlocking.
- *
- * Strong evidence:
- * - Typing Challenge: correct without hints (hintsUsed === 0).
- * - Meaning AI: correct without override, verified verdict 'correct'.
- * - Sentence AI: correct rubric without override, totalScore >= 12/16.
- *
- * Weak evidence:
- * - Flashcard self-ratings ('remembered', 'hard').
- * - Matching pairs games.
- * - Typing with hints (hintsUsed > 0).
- * - Partial AI evaluations ('partially_correct').
- * - Any answer marked with manual override.
- */
 export function classifyLearningEvidence(params: ClassifyEvidenceParams): LearningEvidenceType {
   const {
     learningMode,
@@ -234,69 +244,27 @@ export function classifyLearningEvidence(params: ClassifyEvidenceParams): Learni
     strictVerification = false,
   } = params;
 
-  // Manual overrides are never strong evidence
-  if (isOverridden) {
-    return 'weak';
-  }
+  if (isOverridden) return 'weak';
+  if (result === 'incorrect' || result === 'forgot') return 'incorrect';
+  if (result === 'partially_correct' || result === 'hard') return 'weak';
+  if (!learningMode || learningMode === 'flashcard' || learningMode === 'matching') return 'weak';
 
-  // Incorrect results
-  if (result === 'incorrect' || result === 'forgot') {
-    return 'incorrect';
-  }
-
-  // Partial results
-  if (result === 'partially_correct' || result === 'hard') {
-    return 'weak';
-  }
-
-  // Self-ratings and matching games are inherently weak evidence
-  if (!learningMode || learningMode === 'flashcard' || learningMode === 'matching') {
-    return 'weak';
-  }
-
-  // Typing Challenge
   if (learningMode === 'typing') {
     if (result !== 'correct') return 'incorrect';
-    if (strictVerification) {
-      if (typeof hintsUsed !== 'number' || hintsUsed > 0) {
-        return 'weak';
-      }
-    } else {
-      if (typeof hintsUsed === 'number' && hintsUsed > 0) {
-        return 'weak';
-      }
-    }
+    if (hintsUsed && hintsUsed > 0) return 'weak';
     return 'strong';
   }
 
-  // Meaning AI
   if (learningMode === 'meaning_ai') {
     if (result !== 'correct') return result === 'partially_correct' ? 'weak' : 'incorrect';
-    if (strictVerification) {
-      if (!meaningEvaluation || meaningEvaluation.verdict !== 'correct') {
-        return 'weak';
-      }
-    } else {
-      if (meaningEvaluation && meaningEvaluation.verdict !== 'correct') {
-        return 'weak';
-      }
-    }
+    if (meaningEvaluation && meaningEvaluation.verdict !== 'correct') return 'weak';
     return 'strong';
   }
 
-  // Sentence AI
   if (learningMode === 'sentence_ai') {
-    if (strictVerification) {
-      if (!sentenceEvaluation || sentenceEvaluation.totalScore < 12) {
-        return 'weak';
-      }
-    } else {
-      if (sentenceEvaluation && sentenceEvaluation.totalScore < 12) {
-        return 'weak';
-      }
-      if (result !== 'correct' && (!sentenceEvaluation || sentenceEvaluation.totalScore < 12)) {
-        return result === 'partially_correct' ? 'weak' : 'incorrect';
-      }
+    if (sentenceEvaluation && sentenceEvaluation.totalScore < 12) return 'weak';
+    if (result !== 'correct' && (!sentenceEvaluation || sentenceEvaluation.totalScore < 12)) {
+      return result === 'partially_correct' ? 'weak' : 'incorrect';
     }
     return 'strong';
   }
@@ -306,6 +274,169 @@ export function classifyLearningEvidence(params: ClassifyEvidenceParams): Learni
 
 export function isStrongLearningEvidence(params: ClassifyEvidenceParams): boolean {
   return classifyLearningEvidence(params) === 'strong';
+}
+
+/**
+ * Formats a duration in milliseconds into a concise Vietnamese interval string
+ * e.g., "10 phút", "1 giờ", "1 ngày", "3 ngày", "7 ngày"
+ */
+export function formatIntervalLabel(intervalMs: number): string {
+  if (intervalMs < HOUR_MS) {
+    const mins = Math.max(1, Math.round(intervalMs / MINUTE_MS));
+    return `${mins} phút`;
+  }
+  if (intervalMs < DAY_MS) {
+    const hours = Math.max(1, Math.round(intervalMs / HOUR_MS));
+    return `${hours} giờ`;
+  }
+  const days = Math.max(1, Math.round(intervalMs / DAY_MS));
+  return `${days} ngày`;
+}
+
+/**
+ * Pure helper: Computes the next scheduled interval, timestamps, and stage transitions
+ * WITHOUT mutating stored state. Shared by processReviewAttempt and preview helpers.
+ */
+export function calculateNextSchedule(
+  currentState: WordSrsState,
+  outcome: SrsReviewOutcome,
+  timestamp: number = Date.now(),
+  isStrong: boolean = false
+): {
+  nextReviewAt: number;
+  intervalMs: number;
+  intervalLabel: string;
+  newStage: number;
+  newSubStep: '10m' | '1h' | 'day';
+  lapseCount: number;
+  consecutiveStrongRecallDays: number;
+  lastStrongRecallDate?: string;
+} {
+  const todayStr = getLocalDateString(timestamp);
+  let newStage = currentState.stage || 0;
+  let newSubStep: '10m' | '1h' | 'day' = currentState.subStep || 'day';
+  let intervalMs: number = DAY_MS;
+  let lapseCount = currentState.lapseCount || 0;
+  let consecutiveStrongRecallDays = currentState.consecutiveStrongRecallDays || 0;
+  let lastStrongRecallDate = currentState.lastStrongRecallDate;
+
+  if (outcome === 'forgot') {
+    newStage = Math.max(0, newStage - 1);
+    newSubStep = '10m';
+    lapseCount += 1;
+    consecutiveStrongRecallDays = 0;
+    intervalMs = 10 * MINUTE_MS;
+  } else if (outcome === 'hard') {
+    if (newStage === 0) {
+      newSubStep = '1h';
+      intervalMs = HOUR_MS;
+    } else {
+      newSubStep = 'day';
+      intervalMs = DAY_MS;
+    }
+  } else if (outcome === 'easy') {
+    if (newStage === 0) {
+      newSubStep = 'day';
+      newStage = 1;
+      intervalMs = 3 * DAY_MS;
+    } else {
+      newSubStep = 'day';
+      if (isStrong) {
+        newStage = Math.min(7, newStage + 2);
+        if (lastStrongRecallDate !== todayStr) {
+          consecutiveStrongRecallDays += 1;
+          lastStrongRecallDate = todayStr;
+        }
+      } else {
+        newStage = Math.min(7, newStage + 1);
+      }
+      const base = SRS_INTERVALS_MS[newStage] || DAY_MS;
+      intervalMs = Math.max(3 * DAY_MS, Math.round(base * 1.5));
+    }
+  } else {
+    // outcome === 'remembered'
+    if (newStage === 0) {
+      if (!currentState.subStep || currentState.subStep === '10m') {
+        newSubStep = '1h';
+        newStage = 0;
+        intervalMs = HOUR_MS;
+      } else if (currentState.subStep === '1h') {
+        newSubStep = 'day';
+        newStage = 1;
+        intervalMs = DAY_MS;
+      } else {
+        newSubStep = 'day';
+        newStage = 1;
+        intervalMs = DAY_MS;
+      }
+    } else {
+      newSubStep = 'day';
+      if (isStrong) {
+        if (lastStrongRecallDate !== todayStr) {
+          newStage = Math.min(7, newStage + 1);
+          consecutiveStrongRecallDays += 1;
+          lastStrongRecallDate = todayStr;
+        }
+      } else {
+        newStage = Math.min(7, newStage + 1);
+      }
+      intervalMs = SRS_INTERVALS_MS[newStage] || DAY_MS;
+    }
+  }
+
+  const nextReviewAt = timestamp + intervalMs;
+  const intervalLabel = formatIntervalLabel(intervalMs);
+
+  return {
+    nextReviewAt,
+    intervalMs,
+    intervalLabel,
+    newStage,
+    newSubStep,
+    lapseCount,
+    consecutiveStrongRecallDays,
+    lastStrongRecallDate,
+  };
+}
+
+/**
+ * Pure helper: Previews the next interval for a specific outcome WITHOUT modifying stored data.
+ */
+export function previewNextInterval(
+  wordId: string,
+  outcome: SrsReviewOutcome,
+  now: number = Date.now(),
+  learningMode: LearningMode = 'flashcard'
+): SrsIntervalPreview {
+  const state = getWordSrsState(wordId);
+  const isStrong = classifyLearningEvidence({
+    learningMode,
+    result: outcome === 'forgot' ? 'incorrect' : 'correct',
+  }) === 'strong';
+
+  const schedule = calculateNextSchedule(state, outcome, now, isStrong);
+  return {
+    outcome,
+    intervalMs: schedule.intervalMs,
+    label: schedule.intervalLabel,
+    targetTimestamp: schedule.nextReviewAt,
+  };
+}
+
+/**
+ * Pure helper: Previews expected next intervals for all four outcomes.
+ */
+export function getIntervalPreviews(
+  wordId: string,
+  now: number = Date.now(),
+  learningMode: LearningMode = 'flashcard'
+): Record<SrsReviewOutcome, SrsIntervalPreview> {
+  return {
+    forgot: previewNextInterval(wordId, 'forgot', now, learningMode),
+    hard: previewNextInterval(wordId, 'hard', now, learningMode),
+    remembered: previewNextInterval(wordId, 'remembered', now, learningMode),
+    easy: previewNextInterval(wordId, 'easy', now, learningMode),
+  };
 }
 
 export interface ProcessReviewAttemptParams {
@@ -319,12 +450,9 @@ export interface ProcessReviewAttemptParams {
   isManualOverride?: boolean;
   meaningEvaluation?: MeaningEvaluationResponse;
   sentenceEvaluation?: SentenceEvaluationResponse;
+  outcome?: SrsReviewOutcome;
 }
 
-/**
- * Updates review schedule and evidence rules for a validated review attempt.
- * Implements strong vs weak evidence rules, single promotion per calendar day, and lapse demotion.
- */
 export function processReviewAttempt(
   params: ProcessReviewAttemptParams,
   reviews: ReviewRecord[],
@@ -341,10 +469,12 @@ export function processReviewAttempt(
     isManualOverride = false,
     meaningEvaluation,
     sentenceEvaluation,
+    outcome,
   } = params;
+
   let state = computeWordStatsAndSchedule(wordId, reviews, sessions);
 
-  // Idempotency check for eventId
+  // Idempotency: Ignore already processed eventIds
   if (state.processedReviewEventIds.includes(eventId)) {
     return state;
   }
@@ -354,9 +484,7 @@ export function processReviewAttempt(
   }
 
   const todayStr = getLocalDateString(timestamp);
-  const intervalDays = SRS_INTERVALS[state.stage] || 1;
 
-  // Centralized evidence classification
   const evidenceType = classifyLearningEvidence({
     learningMode,
     result: isCorrect ? 'correct' : isPartiallyCorrect ? 'partially_correct' : 'incorrect',
@@ -367,29 +495,30 @@ export function processReviewAttempt(
     strictVerification: false,
   });
 
-  const isStrongEvidence = evidenceType === 'strong';
-  const isWeakEvidence = evidenceType === 'weak';
-  const isIncorrect = evidenceType === 'incorrect';
+  const isStrong = evidenceType === 'strong';
+  const resolvedOutcome: SrsReviewOutcome =
+    outcome ||
+    (evidenceType === 'incorrect'
+      ? 'forgot'
+      : isPartiallyCorrect
+      ? 'hard'
+      : isCorrect
+      ? 'remembered'
+      : 'forgot');
 
-  if (isIncorrect) {
-    // Genuine forgetting -> demote stage, increase lapse count, schedule near-term review
-    state.stage = Math.max(0, state.stage - 1);
-    state.lapseCount = (state.lapseCount || 0) + 1;
+  // Calculate schedule via unified pure function
+  const schedule = calculateNextSchedule(state, resolvedOutcome, timestamp, isStrong);
+
+  state.stage = schedule.newStage;
+  state.subStep = schedule.newSubStep;
+  state.nextReviewAt = schedule.nextReviewAt;
+  state.lapseCount = schedule.lapseCount;
+  state.consecutiveStrongRecallDays = schedule.consecutiveStrongRecallDays;
+  if (schedule.lastStrongRecallDate) {
+    state.lastStrongRecallDate = schedule.lastStrongRecallDate;
+  }
+  if (resolvedOutcome === 'forgot') {
     state.lastIncorrectDate = todayStr;
-    state.nextReviewAt = timestamp + 12 * 3600 * 1000; // review later today / tomorrow
-    state.consecutiveStrongRecallDays = 0;
-  } else if (isWeakEvidence || isPartiallyCorrect) {
-    // Weak evidence or partial success -> update stats, do not aggressively extend interval
-    state.nextReviewAt = timestamp + intervalDays * 24 * 3600 * 1000;
-  } else if (isStrongEvidence) {
-    // Strong evidence -> can advance stage (at most 1 stage per calendar day)
-    if (state.lastStrongRecallDate !== todayStr) {
-      state.stage = Math.min(SRS_INTERVALS.length - 1, state.stage + 1);
-      state.lastStrongRecallDate = todayStr;
-      state.consecutiveStrongRecallDays = (state.consecutiveStrongRecallDays || 0) + 1;
-    }
-    const newInterval = SRS_INTERVALS[state.stage] || 1;
-    state.nextReviewAt = timestamp + newInterval * 24 * 3600 * 1000;
   }
 
   state.lastReviewAt = timestamp;
@@ -404,17 +533,81 @@ export function getWordLearningStats(wordId: string, reviews: ReviewRecord[], se
   return computeWordStatsAndSchedule(wordId, reviews, sessions);
 }
 
-export function getDueWords(todayDateStr: string = getLocalDateString(), reviews: ReviewRecord[], sessions: LearningSessionRecord[], vocab: VocabularyItem[]): VocabularyItem[] {
+/**
+ * Returns statistics for the current review queue:
+ * - dueNowCount: nextReviewAt <= now
+ * - overdueCount: due > 24 hours ago
+ * - upcomingCount: scheduled in future
+ * - nextScheduledTime: lowest future timestamp
+ */
+export function getSrsQueueStats(
+  vocab: VocabularyItem[],
+  reviews: ReviewRecord[] = [],
+  sessions: LearningSessionRecord[] = [],
+  now: number = Date.now()
+): SrsQueueStats {
   const allStates = getAllSrsStates();
-  const now = Date.now();
+  let dueNowCount = 0;
+  let overdueCount = 0;
+  let upcomingCount = 0;
+  let minNextScheduledTime: number | undefined;
 
-  return vocab.filter((v) => {
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+  vocab.forEach((v) => {
+    const st = allStates[v.id];
+    if (!st || !st.nextReviewAt) return; // unstudied words are not due
+
+    if (st.nextReviewAt <= now) {
+      dueNowCount++;
+      if (now - st.nextReviewAt > ONE_DAY_MS) {
+        overdueCount++;
+      }
+    } else {
+      upcomingCount++;
+      if (!minNextScheduledTime || st.nextReviewAt < minNextScheduledTime) {
+        minNextScheduledTime = st.nextReviewAt;
+      }
+    }
+  });
+
+  return {
+    dueNowCount,
+    overdueCount,
+    upcomingCount,
+    nextScheduledTime: minNextScheduledTime,
+  };
+}
+
+export function getDueWords(
+  todayDateStr: string = getLocalDateString(),
+  reviews: ReviewRecord[] = [],
+  sessions: LearningSessionRecord[] = [],
+  vocab: VocabularyItem[] = [],
+  now: number = Date.now()
+): VocabularyItem[] {
+  const allStates = getAllSrsStates();
+
+  const dueItems = vocab.filter((v) => {
     const st = allStates[v.id] || computeWordStatsAndSchedule(v.id, reviews, sessions);
     if (!st.nextReviewAt) {
-      // New or never scheduled words due for first review if studied or in review queue
-      return st.totalAttempts === 0 || st.stage === 0;
+      return false; // Unstudied words are not due until first genuine study event
     }
     return st.nextReviewAt <= now;
+  });
+
+  // Sort by urgency: overdue and recently lapsed first
+  return dueItems.sort((a, b) => {
+    const stA = allStates[a.id];
+    const stB = allStates[b.id];
+    const timeA = stA?.nextReviewAt || 0;
+    const timeB = stB?.nextReviewAt || 0;
+    const lapseA = stA?.lapseCount || 0;
+    const lapseB = stB?.lapseCount || 0;
+
+    const urgencyA = (now - timeA) + lapseA * (6 * HOUR_MS);
+    const urgencyB = (now - timeB) + lapseB * (6 * HOUR_MS);
+    return urgencyB - urgencyA;
   });
 }
 
@@ -428,20 +621,14 @@ export function getWeakWords(reviews: ReviewRecord[], sessions: LearningSessionR
     .filter((item) => item.srs.difficultyStatus === 'Đang vật lộn' || item.srs.incorrectAttempts > item.srs.correctAttempts || item.srs.lapseCount > 0);
 }
 
-export function getDailyReviewQueue(limit: number = 10, reviews: ReviewRecord[], sessions: LearningSessionRecord[], vocab: VocabularyItem[]): VocabularyItem[] {
-  const due = getDueWords(getLocalDateString(), reviews, sessions, vocab);
+export function getDailyReviewQueue(limit: number = 10, reviews: ReviewRecord[], sessions: LearningSessionRecord[], vocab: VocabularyItem[], now: number = Date.now()): VocabularyItem[] {
+  const due = getDueWords(getLocalDateString(now), reviews, sessions, vocab, now);
   const weak = getWeakWords(reviews, sessions, vocab);
 
-  // Prioritization queue:
-  // 1. Overdue / weak words with high lapse count or recent errors
-  // 2. Due today
-  // 3. Learning words
   const queueMap = new Map<string, VocabularyItem>();
 
-  weak.forEach((w) => queueMap.set(w.id, w));
-  due.forEach((d) => {
-    if (!queueMap.has(d.id)) queueMap.set(d.id, d);
-  });
+  // Only include weak words that are ACTUALLY due now (Requirement 6: weak words scheduled in future are not overdue)
+  due.forEach((d) => queueMap.set(d.id, d));
 
   const combined = Array.from(queueMap.values());
   return combined.slice(0, limit);

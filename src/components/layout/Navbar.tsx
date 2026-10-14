@@ -8,6 +8,7 @@ interface NavbarProps {
   onTabChange: (tab: NavTab) => void;
   onQuickAdd: () => void;
   totalWords: number;
+  dueWordsCount?: number;
   user: any;
   profile: any;
   onOpenAuth: () => void;
@@ -18,6 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onTabChange,
   onQuickAdd,
+  dueWordsCount,
   user,
   profile,
   onOpenAuth,
@@ -63,13 +65,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
             <button
               onClick={() => onTabChange('study')}
-              className={`transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
+              className={`transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 flex items-center gap-1.5 ${
                 currentTab === 'study'
                   ? 'text-[#173B2B] border-[#173B2B] font-semibold'
                   : 'border-transparent hover:text-[#173B2B]'
               }`}
             >
-              Luyện từ vựng
+              <span>Luyện từ vựng</span>
+              {typeof dueWordsCount === 'number' && dueWordsCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-400 text-stone-900 font-mono font-bold">
+                  {dueWordsCount}
+                </span>
+              )}
             </button>
             <button
               onClick={() => onTabChange('sonhuc')}
@@ -165,7 +172,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             currentTab === 'study' ? 'text-[#173B2B] font-semibold' : ''
           }`}
         >
-          <BookOpen className="w-4 h-4" />
+          <div className="relative">
+            <BookOpen className="w-4 h-4" />
+            {typeof dueWordsCount === 'number' && dueWordsCount > 0 && (
+              <span className="absolute -top-1.5 -right-2 px-1 py-0.2 rounded-full text-[9px] bg-amber-400 text-stone-900 font-mono font-bold">
+                {dueWordsCount}
+              </span>
+            )}
+          </div>
           <span>Học</span>
         </button>
         <button

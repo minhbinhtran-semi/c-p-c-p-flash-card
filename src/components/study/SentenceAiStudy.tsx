@@ -33,6 +33,7 @@ import { recordXpReward } from '../../services/progression';
 import { evaluateSentence, AiEvaluationError } from '../../services/aiEvaluation';
 import { CapTongMascot } from '../mascot/CapTongMascot';
 import { getRandomDialogue } from '../../data/dialogues';
+import { samplePracticeVocabulary } from '../../utils/practiceSampling';
 
 interface SentenceAiStudyProps {
   decks: Deck[];
@@ -136,7 +137,8 @@ export const SentenceAiStudy: React.FC<SentenceAiStudyProps> = ({
   const initSession = useCallback(
     (words: VocabularyItem[]) => {
       if (words.length === 0) return;
-      const shuffled = [...words].sort(() => Math.random() - 0.5);
+      const sampled = samplePracticeVocabulary(words);
+      const shuffled = [...sampled].sort(() => Math.random() - 0.5);
 
       setQuestionList(shuffled);
       setCurrentIndex(0);

@@ -62,6 +62,11 @@ import {
   initializeAcknowledgedAchievements,
   detectNewlyUnlockedAchievements,
 } from './services/achievements';
+import { getDueWords } from './services/srs';
+import {
+  publishPublicLearningStats,
+  toggleLeaderboardSharing,
+} from './services/publicLeaderboard';
 
 export default function App() {
   // 1. Data states
@@ -128,6 +133,7 @@ export default function App() {
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [sessions, setSessions] = useState<LearningSessionRecord[]>([]);
   const [isDailyReviewOpen, setIsDailyReviewOpen] = useState(false);
+  const [flashcardInitialMode, setFlashcardInitialMode] = useState<'deck' | 'due'>('deck');
 
   // Synchronize state from storage
   const refreshData = useCallback((checkNewAchievements: boolean = false) => {
@@ -169,6 +175,11 @@ export default function App() {
     });
   }, [reviews, sessions, stats.streak]);
 
+  // Compute due words count across all vocabulary
+  const dueWordsCount = useMemo(() => {
+    return getDueWords(undefined, reviews, sessions, vocabulary).length;
+  }, [reviews, sessions, vocabulary]);
+
   // Auth & Cloud Sync states
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -197,22 +208,7 @@ export default function App() {
           }
         } catch (err) {
           console.error('Error fetching profile or cloud data:', err);
-          setUserProfile((prev) =>
-            prev || {
-              uid: user.uid,
-              displayName: user.displayName || 'Đại ca',
-              email: user.email || undefined,
-              avatarUrl: user.photoURL || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + user.uid,
-              publicNickname: user.displayName || ('DaiCa_' + user.uid.substring(0, 5)),
-              createdAt: Date.now(),
-              lastActiveAt: Date.now(),
-              profileVisibility: 'public',
-              rankedTier: 'Đồng Cạp',
-              rp: 0,
-              achievements: ['welcome_cadre'],
-            }
-          );
-          setSyncStatus('offline');
+          setSyncStatus('error');
         }
       } else {
         setUserProfile(null);
@@ -238,6 +234,50 @@ export default function App() {
       showToast('Đồng bộ thất bại. Mây đang bận đại ca ơi.', 'confused');
     }
   };
+
+  // Milestone 4.3A: Opt-in public learning stats handler
+  const handleToggleShareLeaderboard = async (enabled: boolean): Promise<void> => {
+    if (!firebaseUser || !userProfile) {
+      setIsAuthModalOpen(true);
+      throw new Error('Vui lòng đăng nhập để tham gia Bảng Phong Thần.');
+    }
+    await toggleLeaderboardSharing({
+      uid: firebaseUser.uid,
+      enabled,
+      nickname: userProfile.publicNickname || firebaseUser.displayName || 'Đại ca',
+      avatar: userProfile.avatarUrl || firebaseUser.photoURL || undefined,
+      totalXp: stats.totalXp,
+      streakDays: stats.streak.currentStreak,
+    });
+    setUserProfile((prev) => (prev ? { ...prev, shareLeaderboard: enabled } : prev));
+    showToast(
+      enabled
+        ? 'Đã bật hiển thị trên Bảng Phong Thần thành công!'
+        : 'Đã tắt và gỡ thông tin của bạn khỏi Bảng Phong Thần.',
+      'happy'
+    );
+  };
+
+  // Milestone 4.3A: Auto-sync public summary only when enabled and relevant stats change
+  useEffect(() => {
+    if (!firebaseUser || !userProfile?.shareLeaderboard) return;
+    publishPublicLearningStats({
+      uid: firebaseUser.uid,
+      nickname: userProfile.publicNickname || firebaseUser.displayName || 'Đại ca',
+      avatar: userProfile.avatarUrl || firebaseUser.photoURL || undefined,
+      totalXp: stats.totalXp,
+      streakDays: stats.streak.currentStreak,
+    }).catch((err) => {
+      console.warn('Auto-sync public learning stats error:', err);
+    });
+  }, [
+    firebaseUser,
+    userProfile?.shareLeaderboard,
+    userProfile?.publicNickname,
+    userProfile?.avatarUrl,
+    stats.totalXp,
+    stats.streak.currentStreak,
+  ]);
 
   // Initialize on boot
   useEffect(() => {
@@ -419,10 +459,12 @@ export default function App() {
   // STUDY MODE HANDLER
   const handleStartStudy = (
     deckId: string,
-    mode: LearningMode = 'flashcard'
+    mode: LearningMode = 'flashcard',
+    srsMode: 'deck' | 'due' = 'deck'
   ) => {
     setStudyDeckId(deckId);
     setActiveStudyMode(mode);
+    setFlashcardInitialMode(srsMode);
     setCurrentTab('study');
   };
 
@@ -513,6 +555,7 @@ export default function App() {
         onTabChange={handleTabChange}
         onQuickAdd={() => handleOpenBulkAdd()}
         totalWords={stats.totalWords}
+        dueWordsCount={dueWordsCount}
         user={firebaseUser}
         profile={userProfile}
         onOpenAuth={() => setIsAuthModalOpen(true)}
@@ -543,6 +586,9 @@ export default function App() {
             onCreateDeck={handleCreateDeck}
             onOpenDeck={handleOpenDeck}
             onStudyDeck={handleStartStudy}
+            onOpenDailyReview={() => {
+              handleStartStudy(decks[0]?.id || '', 'flashcard', 'due');
+            }}
             onQuickAdd={() => handleOpenBulkAdd()}
             onGoToDecks={() => setCurrentTab('decks')}
             onOpenRank={() => setIsRankModalOpen(true)}
@@ -568,9 +614,13 @@ export default function App() {
             user={firebaseUser}
             userProfile={userProfile}
             totalXp={stats.totalXp}
+            streakDays={stats.streak.currentStreak}
             mascotTone={settings.mascotTone}
             onOpenRankModal={() => setIsRankModalOpen(true)}
             onGoToArena={() => setCurrentTab('ranked')}
+            onToggleShareLeaderboard={handleToggleShareLeaderboard}
+            onOpenProfile={() => setIsProfileModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         )}
 
@@ -694,12 +744,21 @@ export default function App() {
                 decks={decks}
                 vocabulary={vocabulary}
                 defaultDeckId={studyDeckId || decks[0]?.id}
+                initialMode={flashcardInitialMode}
                 tone={settings.mascotTone}
                 onExit={() => {
                   refreshData(true);
                   setCurrentTab('dashboard');
                 }}
                 onSelectDeck={(id) => setStudyDeckId(id)}
+                onGoToTyping={() => {
+                  refreshData(true);
+                  setActiveStudyMode('typing');
+                }}
+                onGoToSoNhuc={() => {
+                  refreshData(true);
+                  setCurrentTab('sonhuc');
+                }}
               />
             )}
 
@@ -769,6 +828,11 @@ export default function App() {
             onImportJson={handleImportJson}
             onClearAllData={handleClearAllData}
             onResetSeedData={handleResetSeedData}
+            userProfile={userProfile}
+            totalXp={stats.totalXp}
+            streakDays={stats.streak.currentStreak}
+            onToggleShareLeaderboard={handleToggleShareLeaderboard}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         )}
       </main>
@@ -881,6 +945,9 @@ export default function App() {
         onManualSync={handleManualSync}
         achievements={achievements}
         onOpenAchievements={() => setIsAchievementGalleryOpen(true)}
+        totalXp={stats.totalXp}
+        streakDays={stats.streak.currentStreak}
+        onToggleShareLeaderboard={handleToggleShareLeaderboard}
       />
 
       <AchievementGallery
@@ -921,7 +988,6 @@ export default function App() {
       <RankModal
         isOpen={isRankModalOpen}
         onClose={() => setIsRankModalOpen(false)}
-        currentRp={userProfile?.rp || 0}
         totalXp={stats.totalXp}
       />
 

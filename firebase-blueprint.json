@@ -87,6 +87,20 @@
         "state": { "type": "string" }
       },
       "required": ["wordId", "dueDate", "state"]
+    },
+    "PublicLearningStat": {
+      "title": "PublicLearningStat",
+      "description": "Minimal opt-in public learning summary for friends leaderboard",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "nickname": { "type": "string" },
+        "avatar": { "type": "string" },
+        "totalXp": { "type": "number" },
+        "streakDays": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "nickname", "totalXp", "streakDays", "updatedAt"]
     }
   },
   "firestore": {
@@ -113,6 +127,10 @@
     "/users/{userId}/srsStates/{wordId}": {
       "schema": "SrsState",
       "description": "User spaced repetition state per vocabulary word"
+    },
+    "/publicLearningStats/{userId}": {
+      "schema": "PublicLearningStat",
+      "description": "Minimal opt-in public learning summary for friends leaderboard"
     }
   }
 }

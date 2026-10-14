@@ -48,6 +48,30 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Minimal opt-in public learning stats for Friends Leaderboard (Milestone 4.3A)
+    match /publicLearningStats/{userId} {
+      // Only authenticated users can read participating public summaries
+      allow read: if isAuthenticated();
+
+      // A signed-in user can delete only their own public summary
+      allow delete: if isOwner(userId);
+
+      // A signed-in user can create or update only their own public summary with strict validation
+      allow create, update: if isOwner(userId)
+        && request.resource.data.keys().hasOnly(['uid', 'nickname', 'avatar', 'totalXp', 'streakDays', 'updatedAt'])
+        && request.resource.data.uid == userId
+        && request.resource.data.nickname is string
+        && request.resource.data.nickname.size() >= 2
+        && request.resource.data.nickname.size() <= 40
+        && (request.resource.data.get('avatar', '') is string && request.resource.data.get('avatar', '').size() <= 1000)
+        && request.resource.data.totalXp is int
+        && request.resource.data.totalXp >= 0
+        && request.resource.data.streakDays is int
+        && request.resource.data.streakDays >= 0
+        && (request.resource.data.updatedAt is int || request.resource.data.updatedAt is timestamp)
+        && (request.resource.data.updatedAt is int ? request.resource.data.updatedAt > 0 : true);
+    }
+
     // Default deny all other reads/writes
     match /{document=**} {
       allow read, write: if false;

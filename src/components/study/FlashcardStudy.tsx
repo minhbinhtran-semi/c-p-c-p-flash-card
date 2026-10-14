@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   RotateCcw,
   Shuffle,
@@ -8,9 +8,12 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  HelpCircle,
   Sparkles,
   ChevronLeft,
+  Calendar,
+  Clock,
+  BookOpen,
+  Keyboard,
 } from 'lucide-react';
 import {
   Deck,
@@ -20,7 +23,9 @@ import {
   StudyReviewRating,
   VocabularyItem,
 } from '../../types';
-import { recordStudyReview, saveLearningSession } from '../../services/storage';
+import { recordStudyReview, saveLearningSession, getReviewRecords, getLearningSessions } from '../../services/storage';
+import { processReviewAttempt, getDueWords, getIntervalPreviews, getWordSrsState, SrsReviewOutcome, formatIntervalLabel } from '../../services/srs';
+import { recordXpReward } from '../../services/progression';
 import { CapTongMascot } from '../mascot/CapTongMascot';
 import { getRandomDialogue } from '../../data/dialogues';
 
@@ -28,67 +33,107 @@ interface FlashcardStudyProps {
   decks: Deck[];
   vocabulary: VocabularyItem[];
   defaultDeckId?: string;
+  initialMode?: 'deck' | 'due';
   tone: MascotTone;
   onExit: () => void;
   onSelectDeck: (deckId: string) => void;
+  onGoToTyping?: () => void;
+  onGoToSoNhuc?: () => void;
 }
 
 export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
   decks,
   vocabulary,
   defaultDeckId,
+  initialMode = 'deck',
   tone,
   onExit,
+  onSelectDeck,
+  onGoToTyping,
+  onGoToSoNhuc,
 }) => {
+  const [studyMode, setStudyMode] = useState<'deck' | 'due'>(initialMode);
   const [selectedDeckId, setSelectedDeckId] = useState<string>(
     defaultDeckId || (decks[0]?.id ?? '')
   );
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [reverseDirection, setReverseDirection] = useState(false); // false: EN -> VI, true: VI -> EN
+  const [reverseDirection, setReverseDirection] = useState(false);
   const [shuffledCards, setShuffledCards] = useState<VocabularyItem[]>([]);
   const [isCompleted, setIsCompleted] = useState(false);
   const [wordResults, setWordResults] = useState<LearningSessionWordResult[]>([]);
   const [sessionStartTime, setSessionStartTime] = useState<number>(() => Date.now());
 
-  // Session tallies
+  // Session tallies for four outcomes
   const [rememberedCount, setRememberedCount] = useState(0);
   const [hardCount, setHardCount] = useState(0);
   const [forgotCount, setForgotCount] = useState(0);
+  const [easyCount, setEasyCount] = useState(0);
+  const [scheduledNextTimes, setScheduledNextTimes] = useState<number[]>([]);
+
+  // Double-click and rapid submission guard
+  const isSubmittingRef = useRef(false);
 
   // Active dialogue reaction
   const [currentMascotReaction, setCurrentMascotReaction] = useState(() =>
     getRandomDialogue('FLASHCARD_START', tone)
   );
 
-  // Load cards for active deck
-  const initCards = useCallback((deckId: string, shuffle = false) => {
-    const raw = vocabulary.filter((v) => v.deckId === deckId);
-    let list = [...raw];
-    if (shuffle) {
-      list = list.sort(() => Math.random() - 0.5);
+  // Calculate current due cards count for badge
+  const dueCount = useMemo(() => {
+    const revs = getReviewRecords();
+    const sess = getLearningSessions();
+    return getDueWords(undefined, revs, sess, vocabulary).length;
+  }, [vocabulary]);
+
+  // Load cards for active mode & deck
+  const initCards = useCallback((mode: 'deck' | 'due', deckId: string, shuffle = false) => {
+    let list: VocabularyItem[] = [];
+    if (mode === 'due') {
+      const revs = getReviewRecords();
+      const sess = getLearningSessions();
+      list = getDueWords(undefined, revs, sess, vocabulary);
+    } else {
+      list = vocabulary.filter((v) => v.deckId === deckId);
     }
+
+    if (shuffle) {
+      list = [...list].sort(() => Math.random() - 0.5);
+    }
+
     setShuffledCards(list);
     setCurrentIndex(0);
     setIsFlipped(false);
     setIsCompleted(false);
     setWordResults([]);
+    setScheduledNextTimes([]);
     setSessionStartTime(Date.now());
     setRememberedCount(0);
     setHardCount(0);
     setForgotCount(0);
+    setEasyCount(0);
+    isSubmittingRef.current = false;
     setCurrentMascotReaction(getRandomDialogue('FLASHCARD_START', tone));
   }, [vocabulary, tone]);
 
   useEffect(() => {
-    if (selectedDeckId) {
-      initCards(selectedDeckId);
-    }
-  }, [selectedDeckId, initCards]);
+    initCards(studyMode, selectedDeckId);
+  }, [studyMode, selectedDeckId, initCards]);
 
   const currentDeck = decks.find((d) => d.id === selectedDeckId);
   const currentCard = shuffledCards[currentIndex];
   const totalCards = shuffledCards.length;
+
+  // Calculate real interval previews for the current card via SRS engine
+  const intervalPreviews = useMemo(() => {
+    if (!currentCard) return null;
+    return getIntervalPreviews(currentCard.id, Date.now(), 'flashcard');
+  }, [currentCard]);
+
+  const currentCardSrs = useMemo(() => {
+    if (!currentCard) return null;
+    return getWordSrsState(currentCard.id);
+  }, [currentCard]);
 
   const handlePronounce = useCallback((word?: string) => {
     const targetWord = word || currentCard?.englishWord;
@@ -102,38 +147,80 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
     }
   }, [currentCard]);
 
-  // Handle card ratings
-  const handleRate = useCallback((rating: StudyReviewRating) => {
-    if (!currentCard || !selectedDeckId) return;
+  // Handle card ratings with the four outcomes
+  const handleRate = useCallback((outcome: SrsReviewOutcome) => {
+    // Prevent accidental submit before reveal, or double-click re-submission
+    if (!currentCard || !isFlipped || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
 
-    // Record review in storage
-    recordStudyReview(selectedDeckId, currentCard.id, rating);
+    const activeDeckId = currentCard.deckId || selectedDeckId;
+    const now = Date.now();
+    const eventId = `srs-fc-${now}-${Math.random().toString(36).substring(2, 7)}`;
 
-    const resultVerdict =
-      rating === 'remembered'
-        ? 'correct'
-        : rating === 'hard'
-        ? 'partially_correct'
-        : 'incorrect';
+    // 1. Record review in local storage
+    recordStudyReview(activeDeckId, currentCard.id, outcome as StudyReviewRating);
 
+    // 2. Process review attempt via authoritative SRS scheduling engine
+    const revs = getReviewRecords();
+    const sess = getLearningSessions();
+    const isCorrect = outcome === 'remembered' || outcome === 'easy';
+    const isPartiallyCorrect = outcome === 'hard';
+
+    const srsState = processReviewAttempt(
+      {
+        eventId,
+        wordId: currentCard.id,
+        learningMode: 'flashcard',
+        isCorrect,
+        isPartiallyCorrect,
+        outcome,
+        timestamp: now,
+      },
+      revs,
+      sess
+    );
+
+    if (srsState.nextReviewAt) {
+      setScheduledNextTimes((prev) => [...prev, srsState.nextReviewAt!]);
+    }
+
+    // 3. Record XP attempt (flashcards award 0 XP, but count toward streak qualification)
+    recordXpReward({
+      sourceSessionId: `session-flashcard-${sessionStartTime}`,
+      sourceAttemptId: eventId,
+      wordId: currentCard.id,
+      deckId: activeDeckId,
+      learningMode: 'flashcard',
+      calculateParams: {
+        learningMode: 'flashcard',
+        isCorrect,
+      },
+      timestamp: now,
+    });
+
+    const resultVerdict = isCorrect ? 'correct' : isPartiallyCorrect ? 'partially_correct' : 'incorrect';
     const currentResult: LearningSessionWordResult = {
       wordId: currentCard.id,
       result: resultVerdict,
-      timestamp: Date.now(),
+      timestamp: now,
     };
 
     const updatedWordResults = [...wordResults, currentResult];
     setWordResults(updatedWordResults);
 
     // Update tallies
-    const newRemembered = rememberedCount + (rating === 'remembered' ? 1 : 0);
-    const newHard = hardCount + (rating === 'hard' ? 1 : 0);
-    const newForgot = forgotCount + (rating === 'forgot' ? 1 : 0);
+    const newRemembered = rememberedCount + (outcome === 'remembered' ? 1 : 0);
+    const newHard = hardCount + (outcome === 'hard' ? 1 : 0);
+    const newForgot = forgotCount + (outcome === 'forgot' ? 1 : 0);
+    const newEasy = easyCount + (outcome === 'easy' ? 1 : 0);
 
-    if (rating === 'remembered') {
+    if (outcome === 'remembered') {
       setRememberedCount(newRemembered);
       setCurrentMascotReaction(getRandomDialogue('FLASHCARD_REMEMBERED', tone));
-    } else if (rating === 'hard') {
+    } else if (outcome === 'easy') {
+      setEasyCount(newEasy);
+      setCurrentMascotReaction(getRandomDialogue('FLASHCARD_REMEMBERED', tone));
+    } else if (outcome === 'hard') {
       setHardCount(newHard);
       setCurrentMascotReaction(getRandomDialogue('FLASHCARD_HARD', tone));
     } else {
@@ -145,28 +232,32 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
     if (currentIndex + 1 < totalCards) {
       setCurrentIndex((prev) => prev + 1);
       setIsFlipped(false);
+      // Release lock for next card after brief transition
+      setTimeout(() => {
+        isSubmittingRef.current = false;
+      }, 100);
     } else {
       setIsCompleted(true);
+      isSubmittingRef.current = false;
 
-      // Persist completed learning session record (Milestone 4.1 audit)
+      // Persist completed learning session record
       const sessionRecord: LearningSessionRecord = {
-        id: `session-flashcard-${Date.now()}`,
-        deckId: selectedDeckId,
+        id: `session-flashcard-${now}`,
+        deckId: activeDeckId,
         learningMode: 'flashcard',
         startedAt: sessionStartTime,
-        completedAt: Date.now(),
-        durationSeconds: Math.max(1, Math.round((Date.now() - sessionStartTime) / 1000)),
+        completedAt: now,
+        durationSeconds: Math.max(1, Math.round((now - sessionStartTime) / 1000)),
         totalQuestions: totalCards,
-        correctAnswers: newRemembered,
+        correctAnswers: newRemembered + newEasy,
         partiallyCorrectAnswers: newHard,
         incorrectAnswers: newForgot,
         wordResults: updatedWordResults,
       };
       saveLearningSession(sessionRecord);
 
-      // Pick end of session reaction
-      const total = totalCards;
-      const successRate = total > 0 ? newRemembered / total : 0;
+      // Mascot reaction at end
+      const successRate = totalCards > 0 ? (newRemembered + newEasy) / totalCards : 0;
       if (successRate >= 0.75) {
         setCurrentMascotReaction(getRandomDialogue('SESSION_SUCCESS', tone));
       } else if (successRate >= 0.45) {
@@ -177,6 +268,7 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
     }
   }, [
     currentCard,
+    isFlipped,
     selectedDeckId,
     currentIndex,
     totalCards,
@@ -184,18 +276,47 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
     rememberedCount,
     hardCount,
     forgotCount,
+    easyCount,
     wordResults,
     sessionStartTime,
   ]);
 
-  const handleShuffleToggle = () => {
-    initCards(selectedDeckId, true);
-  };
+  const handleExit = useCallback(() => {
+    if (!isCompleted && wordResults.length > 0) {
+      const now = Date.now();
+      const activeDeckId = currentCard?.deckId || selectedDeckId;
+      const partialSession: LearningSessionRecord = {
+        id: `session-flashcard-partial-${now}`,
+        deckId: activeDeckId,
+        learningMode: 'flashcard',
+        startedAt: sessionStartTime,
+        completedAt: now,
+        durationSeconds: Math.max(1, Math.round((now - sessionStartTime) / 1000)),
+        totalQuestions: wordResults.length,
+        correctAnswers: rememberedCount + easyCount,
+        partiallyCorrectAnswers: hardCount,
+        incorrectAnswers: forgotCount,
+        wordResults: wordResults,
+      };
+      saveLearningSession(partialSession);
+    }
+    onExit();
+  }, [
+    isCompleted,
+    wordResults,
+    currentCard,
+    selectedDeckId,
+    sessionStartTime,
+    rememberedCount,
+    easyCount,
+    hardCount,
+    forgotCount,
+    onExit,
+  ]);
 
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if user is typing in an input
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
         return;
       }
@@ -205,15 +326,18 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
       if (e.code === 'Space' || e.code === 'Enter') {
         e.preventDefault();
         setIsFlipped((prev) => !prev);
-      } else if (e.key === '1') {
+      } else if (e.key === '1' && isFlipped) {
         e.preventDefault();
         handleRate('forgot');
-      } else if (e.key === '2') {
+      } else if (e.key === '2' && isFlipped) {
         e.preventDefault();
         handleRate('hard');
-      } else if (e.key === '3') {
+      } else if (e.key === '3' && isFlipped) {
         e.preventDefault();
         handleRate('remembered');
+      } else if (e.key === '4' && isFlipped) {
+        e.preventDefault();
+        handleRate('easy');
       } else if (e.key.toLowerCase() === 'r') {
         e.preventDefault();
         handlePronounce();
@@ -230,10 +354,45 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isCompleted, currentIndex, totalCards, handleRate, handlePronounce]);
+  }, [isCompleted, isFlipped, currentIndex, totalCards, handleRate, handlePronounce]);
 
-  // If no decks exist
-  if (decks.length === 0) {
+  // Mode B Empty State: No words due today
+  if (studyMode === 'due' && totalCards === 0 && !isCompleted) {
+    return (
+      <div className="max-w-xl mx-auto py-16 px-4 text-center animate-in fade-in duration-200">
+        <div className="w-16 h-16 rounded-3xl bg-[#E5F3E9] text-[#268A59] flex items-center justify-center mx-auto text-3xl font-bold shadow-xs">
+          ✨
+        </div>
+        <h3 className="mt-4 text-xl font-black text-[#173B2B]">
+          Hôm nay đại ca tạm hết nợ từ vựng. Giỏi đấy!
+        </h3>
+        <p className="mt-2 text-sm text-[#69756D] leading-relaxed max-w-md mx-auto">
+          Không có từ nào đến hạn ôn tập tại thời điểm này. Các từ đều đã được lên lịch hẹn tiếp theo theo chu kỳ SRS.
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <button
+            onClick={() => {
+              setStudyMode('deck');
+              initCards('deck', selectedDeckId);
+            }}
+            className="px-5 py-2.5 text-xs font-bold text-white bg-[#173B2B] hover:bg-[#268A59] rounded-xl transition shadow-xs cursor-pointer flex items-center gap-1.5"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            <span>Học tiếp theo bộ từ</span>
+          </button>
+          <button
+            onClick={handleExit}
+            className="px-4 py-2.5 text-xs font-semibold text-[#69756D] hover:text-[#173B2B] bg-white border border-[#E6EBE6] rounded-xl transition"
+          >
+            Về trang chủ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // If no decks exist in Mode A
+  if (decks.length === 0 && studyMode === 'deck') {
     return (
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
         <CapTongMascot expression="confused" size="lg" />
@@ -244,7 +403,7 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
           Mau tạo một bộ từ vựng mới rồi quay lại đây nạp kiến thức nhé đại ca.
         </p>
         <button
-          onClick={onExit}
+          onClick={handleExit}
           className="mt-6 px-5 py-2.5 text-sm font-semibold text-white bg-[#173B2B] hover:bg-[#268A59] rounded-xl shadow-xs transition-colors"
         >
           Quay lại danh sách bộ từ
@@ -254,7 +413,7 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
   }
 
   // If active deck has 0 cards
-  if (totalCards === 0) {
+  if (totalCards === 0 && !isCompleted && studyMode === 'deck') {
     return (
       <div className="max-w-xl mx-auto py-16 px-4 text-center">
         <div className="flex justify-center mb-4">
@@ -268,7 +427,7 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
         </p>
         <div className="mt-6 flex items-center justify-center gap-3">
           <button
-            onClick={onExit}
+            onClick={handleExit}
             className="px-4 py-2 text-sm font-medium text-[#1D2420] border border-[#E6EBE6] bg-white rounded-xl hover:bg-[#FAFBF8] transition-colors"
           >
             Quay lại
@@ -280,34 +439,38 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
 
   // Session Completion Screen
   if (isCompleted) {
-    const accuracy = totalCards > 0 ? Math.round((rememberedCount / totalCards) * 100) : 0;
+    const totalReviewed = totalCards;
+    const earliestNextTime = scheduledNextTimes.length > 0 ? Math.min(...scheduledNextTimes) : null;
+    const now = Date.now();
+    const nextIntervalMs = earliestNextTime ? Math.max(0, earliestNextTime - now) : 0;
+    const nextTimeLabel = nextIntervalMs > 0 ? formatIntervalLabel(nextIntervalMs) : 'Ngay bây giờ';
 
     return (
       <div className="max-w-2xl mx-auto py-8 px-4 animate-in fade-in zoom-in-95 duration-200">
-        <div className="bg-[#FFFFFF] border border-[#E6EBE6] rounded-3xl p-6 sm:p-10 shadow-xs text-center">
-          {/* Mascot feedback */}
+        <div className="bg-[#FFFFFF] border border-[#E6EBE6] rounded-3xl p-6 sm:p-10 shadow-xs text-center space-y-6">
           <div className="flex justify-center">
             <CapTongMascot
-              expression={accuracy >= 70 ? 'happy' : accuracy >= 40 ? 'smug' : 'confused'}
+              expression={forgotCount === 0 ? 'happy' : forgotCount <= 2 ? 'smug' : 'confused'}
               size="lg"
             />
           </div>
 
-          <span className="inline-block mt-3 text-xs font-bold uppercase tracking-wider text-[#268A59]">
-            Hoàn thành buổi học
-          </span>
+          <div>
+            <span className="inline-block text-xs font-bold uppercase tracking-wider text-[#268A59]">
+              Hoàn thành phiên Flashcard
+            </span>
+            <h2 className="mt-1 text-2xl sm:text-3xl font-black text-[#173B2B]">
+              Đại ca vừa ôn xong {totalReviewed} từ.
+            </h2>
+            <p className="mt-1.5 text-xs text-[#69756D]">
+              {forgotCount > 0 ? `${forgotCount} từ cần gặp lại sớm.` : 'Tất cả từ đã ghi nhớ xuất sắc!'}
+              {' '}{totalReviewed - forgotCount} từ đã được lên lịch ôn tiếp theo chu kỳ SRS.
+            </p>
+          </div>
 
-          <h2 className="mt-1 text-2xl sm:text-3xl font-extrabold text-[#173B2B]">
-            {accuracy >= 70
-              ? 'Xuất sắc! Não đại ca đỉnh đấy!'
-              : accuracy >= 40
-              ? 'Tạm được, có cố gắng!'
-              : 'Hơi toang rồi đại ca ơi!'}
-          </h2>
-
-          {/* Quote speech box */}
-          <div className="mt-4 p-4 bg-[#FAFBF8] border border-[#E6EBE6] rounded-2xl max-w-lg mx-auto">
-            <p className="text-sm font-medium text-[#1D2420]">
+          {/* Speech box */}
+          <div className="p-4 bg-[#FAFBF8] border border-[#E6EBE6] rounded-2xl max-w-lg mx-auto">
+            <p className="text-xs sm:text-sm font-medium text-[#1D2420]">
               "{currentMascotReaction.text}"
             </p>
             <span className="text-[11px] font-semibold text-[#69756D] mt-1 block">
@@ -315,49 +478,71 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
             </span>
           </div>
 
-          {/* Stats Breakdown */}
-          <div className="mt-8 grid grid-cols-3 gap-3 sm:gap-4 max-w-lg mx-auto">
-            <div className="p-4 bg-[#E5F3E9] border border-[#BDE5C8] rounded-2xl">
-              <span className="text-xs font-medium text-[#173B2B] block">Đã nhớ</span>
-              <span className="text-2xl font-black text-[#173B2B] tabular-nums mt-1 block">
-                {rememberedCount}
-              </span>
+          {/* Detailed Outcomes Breakdown Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 max-w-lg mx-auto">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-2xl">
+              <span className="text-[11px] font-bold text-red-700 block">🔴 Quên</span>
+              <span className="text-xl font-black text-red-800 tabular-nums mt-0.5 block">{forgotCount}</span>
             </div>
-
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl">
-              <span className="text-xs font-medium text-amber-800 block">Khó</span>
-              <span className="text-2xl font-black text-amber-800 tabular-nums mt-1 block">
-                {hardCount}
-              </span>
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl">
+              <span className="text-[11px] font-bold text-amber-800 block">🟠 Khó</span>
+              <span className="text-xl font-black text-amber-900 tabular-nums mt-0.5 block">{hardCount}</span>
             </div>
-
-            <div className="p-4 bg-red-50 border border-red-200 rounded-2xl">
-              <span className="text-xs font-medium text-red-800 block">Chưa nhớ</span>
-              <span className="text-2xl font-black text-red-800 tabular-nums mt-1 block">
-                {forgotCount}
-              </span>
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl">
+              <span className="text-[11px] font-bold text-emerald-800 block">🟢 Nhớ</span>
+              <span className="text-xl font-black text-emerald-900 tabular-nums mt-0.5 block">{rememberedCount}</span>
+            </div>
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl">
+              <span className="text-[11px] font-bold text-blue-800 block">🔵 Dễ</span>
+              <span className="text-xl font-black text-blue-900 tabular-nums mt-0.5 block">{easyCount}</span>
             </div>
           </div>
 
-          <div className="mt-4 text-xs text-[#69756D]">
-            Tổng số thẻ: <span className="font-semibold tabular-nums">{totalCards}</span> · Tỷ lệ nhớ chuẩn:{' '}
-            <span className="font-semibold text-[#173B2B] tabular-nums">{accuracy}%</span>
-          </div>
+          {/* Next upcoming review hint */}
+          {earliestNextTime && (
+            <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#FAFBF8] border border-[#E6EBE6] rounded-xl text-xs text-[#69756D]">
+              <Clock className="w-3.5 h-3.5 text-[#268A59]" />
+              <span>
+                Từ cần ôn gần nhất tiếp theo: <strong className="text-[#173B2B]">{nextTimeLabel} nữa</strong>
+              </span>
+            </div>
+          )}
+
+          {/* Optional Link to Typing Practice for Strong Evidence */}
+          {onGoToTyping && (
+            <div className="pt-2">
+              <button
+                onClick={onGoToTyping}
+                className="inline-flex items-center gap-2 text-xs font-bold text-[#268A59] hover:text-[#173B2B] hover:underline cursor-pointer"
+              >
+                <Keyboard className="w-4 h-4" />
+                <span>⌨️ Luyện gõ từ để nhớ chắc hơn & tích lũy XP</span>
+              </button>
+            </div>
+          )}
 
           {/* Actions */}
-          <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+          <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3 border-t border-[#E6EBE6]">
             <button
-              onClick={() => initCards(selectedDeckId, true)}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-[#173B2B] hover:bg-[#268A59] rounded-xl shadow-xs transition-colors"
+              onClick={() => initCards(studyMode, selectedDeckId, true)}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#173B2B] hover:bg-[#268A59] rounded-xl shadow-xs transition cursor-pointer"
             >
-              <RotateCcw className="w-4 h-4" />
-              <span>Xáo trộn & Ôn lại lần nữa</span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Ôn lại phiên này</span>
             </button>
+            {onGoToSoNhuc && (
+              <button
+                onClick={onGoToSoNhuc}
+                className="w-full sm:w-auto px-4 py-2.5 text-xs font-semibold text-[#173B2B] hover:bg-[#E5F3E9] border border-[#BDE5C8] bg-white rounded-xl transition cursor-pointer"
+              >
+                Xem Sổ Nhục
+              </button>
+            )}
             <button
-              onClick={onExit}
-              className="w-full sm:w-auto px-6 py-3 text-sm font-semibold text-[#1D2420] hover:bg-[#FAFBF8] border border-[#E6EBE6] bg-white rounded-xl transition-colors"
+              onClick={handleExit}
+              className="w-full sm:w-auto px-4 py-2.5 text-xs font-semibold text-[#69756D] hover:text-[#173B2B] border border-[#E6EBE6] bg-white rounded-xl transition cursor-pointer"
             >
-              Về danh sách bộ từ
+              Về trang chủ
             </button>
           </div>
         </div>
@@ -366,251 +551,295 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
   }
 
   return (
-    <div className="max-w-3xl mx-auto py-6 px-4">
-      {/* Top Controls: Deck Selector & Settings */}
+    <div className="max-w-3xl mx-auto py-6 px-4 space-y-4">
+      {/* Top Header Controls: Mode Selector & Options */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#E6EBE6]">
         <div className="flex items-center gap-3">
           <button
-            onClick={onExit}
-            className="p-2 text-[#69756D] hover:text-[#173B2B] hover:bg-white rounded-lg border border-[#E6EBE6] transition-colors"
+            onClick={handleExit}
+            className="p-2 text-[#69756D] hover:text-[#173B2B] hover:bg-white rounded-xl border border-[#E6EBE6] transition"
             title="Quay lại"
           >
-            <ChevronLeft className="w-5 h-5" />
+            <ChevronLeft className="w-4 h-4" />
           </button>
-          <div>
-            <div className="flex items-center gap-2">
-              <select
-                value={selectedDeckId}
-                onChange={(e) => setSelectedDeckId(e.target.value)}
-                className="text-base font-bold text-[#173B2B] bg-transparent border-none p-0 focus:ring-0 cursor-pointer hover:underline"
-              >
-                {decks.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <span className="text-xs text-[#69756D] font-mono tabular-nums">
-              Thẻ {currentIndex + 1} / {totalCards}
-            </span>
+
+          {/* Entry Mode Switcher: Mode A (Học bộ từ) vs Mode B (Ôn từ đến hạn) */}
+          <div className="flex items-center bg-white p-1 rounded-xl border border-[#E6EBE6] text-xs font-bold shadow-2xs">
+            <button
+              onClick={() => {
+                setStudyMode('deck');
+                initCards('deck', selectedDeckId);
+              }}
+              className={`px-3 py-1.5 rounded-lg transition ${
+                studyMode === 'deck'
+                  ? 'bg-[#173B2B] text-white shadow-2xs'
+                  : 'text-[#69756D] hover:text-[#173B2B]'
+              }`}
+            >
+              📁 Học bộ từ
+            </button>
+            <button
+              onClick={() => {
+                setStudyMode('due');
+                initCards('due', selectedDeckId);
+              }}
+              className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                studyMode === 'due'
+                  ? 'bg-[#173B2B] text-white shadow-2xs'
+                  : 'text-[#69756D] hover:text-[#173B2B]'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Ôn từ đến hạn</span>
+              {dueCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-400 text-stone-900 font-mono font-bold">
+                  {dueCount}
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Action Toggles */}
+        {/* Deck Picker (Mode A) & Shuffle Toggle */}
         <div className="flex items-center gap-2 self-end sm:self-auto">
+          {studyMode === 'deck' && (
+            <select
+              value={selectedDeckId}
+              onChange={(e) => {
+                const newId = e.target.value;
+                setSelectedDeckId(newId);
+                onSelectDeck(newId);
+              }}
+              className="text-xs font-bold text-[#173B2B] bg-white border border-[#E6EBE6] rounded-xl px-3 py-1.5 focus:ring-0 cursor-pointer"
+            >
+              {decks.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.title}
+                </option>
+              ))}
+            </select>
+          )}
+
           <button
             type="button"
             onClick={() => setReverseDirection((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+            className={`px-2.5 py-1.5 text-xs font-semibold rounded-xl border transition ${
               reverseDirection
                 ? 'bg-[#173B2B] text-white border-[#173B2B]'
                 : 'bg-white text-[#69756D] border-[#E6EBE6] hover:text-[#173B2B]'
             }`}
-            title="Đảo chiều lật thẻ (Anh -> Việt hoặc Việt -> Anh)"
+            title="Đảo chiều thẻ (Anh ➔ Việt hoặc Việt ➔ Anh)"
           >
             <span>{reverseDirection ? 'Việt ➔ Anh' : 'Anh ➔ Việt'}</span>
           </button>
 
           <button
             type="button"
-            onClick={handleShuffleToggle}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white text-[#69756D] hover:text-[#173B2B] border border-[#E6EBE6] rounded-lg transition-colors"
-            title="Xáo trộn thứ tự các thẻ"
+            onClick={() => initCards(studyMode, selectedDeckId, true)}
+            className="p-1.5 bg-white text-[#69756D] hover:text-[#173B2B] border border-[#E6EBE6] rounded-xl transition"
+            title="Xáo trộn thẻ"
           >
-            <Shuffle className="w-3.5 h-3.5" />
-            <span>Xáo thẻ</span>
+            <Shuffle className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Progress Bar */}
-      <div className="mt-4 w-full bg-[#E6EBE6] h-1.5 rounded-full overflow-hidden">
+      {/* Progress Bar & Counter */}
+      <div className="flex items-center justify-between text-xs font-mono font-semibold text-[#69756D]">
+        <span>
+          {studyMode === 'due' ? '🔥 Chế độ: Ôn từ đến hạn' : `Bộ: ${currentDeck?.title || 'Từ vựng'}`}
+        </span>
+        <span>
+          Thẻ {currentIndex + 1} / {totalCards}
+        </span>
+      </div>
+      <div className="w-full bg-[#E6EBE6] h-1.5 rounded-full overflow-hidden">
         <div
           className="bg-[#268A59] h-full transition-all duration-300"
           style={{ width: `${((currentIndex + 1) / totalCards) * 100}%` }}
         />
       </div>
 
-      {/* Mascot Speech Bubble Toast */}
-      <div className="mt-4 flex items-center gap-3 bg-white border border-[#E6EBE6] rounded-xl px-4 py-2.5 shadow-xs">
-        <CapTongMascot
-          expression={currentMascotReaction.expression}
-          size="sm"
-          interactive
-          onClick={() => setCurrentMascotReaction(getRandomDialogue('FLASHCARD_START', tone))}
-        />
-        <p className="text-xs font-medium text-[#1D2420] flex-1 truncate">
-          "{currentMascotReaction.text}"
-        </p>
-      </div>
+      {/* Active Recall Instruction Notice */}
+      {!isFlipped && (
+        <div className="text-center py-1">
+          <p className="text-xs text-[#69756D] font-medium">
+            💡 Thử tự nhớ nghĩa trước khi lật thẻ nhé đại ca.
+          </p>
+        </div>
+      )}
 
       {/* FLASHCARD INTERACTION CONTAINER */}
-      <div className="mt-6 perspective-1000">
+      <div className="perspective-1000">
         <div
-          onClick={() => setIsFlipped((prev) => !prev)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === ' ' || e.key === 'Enter') {
-              e.preventDefault();
-              setIsFlipped((prev) => !prev);
-            }
+          onClick={() => {
+            if (!isFlipped) setIsFlipped(true);
           }}
-          className="w-full min-h-[300px] sm:min-h-[340px] bg-[#FFFFFF] border-2 border-[#E6EBE6] hover:border-[#268A59]/40 rounded-3xl p-6 sm:p-10 flex flex-col justify-between cursor-pointer select-none transition-all duration-300 shadow-xs relative"
+          className={`w-full min-h-[300px] sm:min-h-[340px] bg-white border-2 rounded-3xl p-6 sm:p-10 flex flex-col justify-between transition-all duration-200 select-none shadow-xs relative ${
+            isFlipped ? 'border-[#268A59]/40 bg-[#FAFBF8]' : 'border-[#E6EBE6] cursor-pointer hover:border-[#268A59]/40'
+          }`}
         >
-          {/* Card Top Pill: Part of speech or Direction indicator */}
+          {/* Top Row: Part of Speech & Audio */}
           <div className="flex items-center justify-between text-xs text-[#69756D]">
-            <span className="font-medium text-[#268A59]">
-              {reverseDirection
-                ? isFlipped
-                  ? currentCard.partOfSpeech || 'Tiếng Anh'
-                  : 'Tiếng Việt'
-                : isFlipped
-                ? 'Nghĩa tiếng Việt'
-                : currentCard.partOfSpeech || 'Tiếng Anh'}
-            </span>
-            <span className="text-[11px] text-[#69756D] hidden sm:inline">
-              Nhấn Space hoặc chạm để lật thẻ
-            </span>
+            <div className="flex items-center gap-2">
+              {currentCard.partOfSpeech && (
+                <span className="font-bold text-[#268A59] bg-[#E5F3E9] px-2.5 py-0.5 rounded-md text-[11px]">
+                  {currentCard.partOfSpeech}
+                </span>
+              )}
+              {currentCardSrs?.difficultyStatus && (
+                <span className="text-[10px] text-stone-600 font-medium px-2 py-0.5 rounded-md bg-stone-100">
+                  {currentCardSrs.difficultyStatus}
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePronounce();
+              }}
+              className="p-2 text-[#268A59] hover:bg-[#E5F3E9] rounded-xl transition"
+              title="Phát âm từ (Phím R)"
+            >
+              <Volume2 className="w-4 h-4" />
+            </button>
           </div>
 
-          {/* Card Main Word Face */}
-          <div className="my-auto py-6 text-center">
-            {!isFlipped ? (
-              // FRONT FACE
-              reverseDirection ? (
-                <div>
-                  <h3 className="text-2xl sm:text-3xl font-extrabold text-[#173B2B] leading-tight">
-                    {currentCard.vietnameseDefinition}
-                  </h3>
-                  {currentCard.notes && (
-                    <p className="mt-3 text-xs text-[#69756D] italic">
-                      Gợi ý: {currentCard.notes}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <div className="flex items-center justify-center gap-3">
-                    <h3 className="text-3xl sm:text-4xl font-black text-[#173B2B] tracking-tight">
-                      {currentCard.englishWord}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handlePronounce();
-                      }}
-                      className="p-2 text-[#268A59] hover:bg-[#E5F3E9] rounded-full transition-colors"
-                      title="Nghe phát âm (Phím R)"
-                    >
-                      <Volume2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                  {currentCard.partOfSpeech && (
-                    <span className="mt-2 inline-block text-xs font-semibold text-[#69756D] italic">
-                      ({currentCard.partOfSpeech})
-                    </span>
-                  )}
-                </div>
-              )
-            ) : (
-              // BACK FACE (REVEALED)
-              reverseDirection ? (
-                <div>
-                  <div className="flex items-center justify-center gap-3">
-                    <h3 className="text-3xl sm:text-4xl font-black text-[#268A59] tracking-tight">
-                      {currentCard.englishWord}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handlePronounce();
-                      }}
-                      className="p-2 text-[#268A59] hover:bg-[#E5F3E9] rounded-full transition-colors"
-                      title="Nghe phát âm (Phím R)"
-                    >
-                      <Volume2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                  {currentCard.exampleSentence && (
-                    <div className="mt-4 p-3 bg-[#FAFBF8] border border-[#E6EBE6] rounded-xl text-xs text-[#1D2420] text-left max-w-lg mx-auto">
-                      <span className="font-semibold block text-[#173B2B] mb-0.5">Ví dụ:</span>
-                      "{currentCard.exampleSentence}"
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <h3 className="text-2xl sm:text-3xl font-extrabold text-[#173B2B] leading-tight">
-                    {currentCard.vietnameseDefinition}
-                  </h3>
-                  {currentCard.exampleSentence && (
-                    <div className="mt-4 p-3 bg-[#FAFBF8] border border-[#E6EBE6] rounded-xl text-xs text-[#1D2420] text-left max-w-lg mx-auto">
-                      <span className="font-semibold block text-[#173B2B] mb-0.5">Ví dụ:</span>
-                      "{currentCard.exampleSentence}"
-                    </div>
-                  )}
-                  {currentCard.notes && (
-                    <p className="mt-2 text-xs text-[#69756D]">
-                      Ghi chú: {currentCard.notes}
-                    </p>
-                  )}
-                </div>
-              )
+          {/* Card Core Content */}
+          <div className="my-auto py-4 text-center space-y-3">
+            {/* Question side (English word) */}
+            <h3 className="text-3xl sm:text-4xl font-black text-[#173B2B] tracking-tight">
+              {reverseDirection ? currentCard.vietnameseDefinition : currentCard.englishWord}
+            </h3>
+
+            {/* Answer side: Revealed only after flipping */}
+            {isFlipped && (
+              <div className="pt-3 border-t border-emerald-100 animate-in fade-in duration-200 space-y-2">
+                <p className="text-xl sm:text-2xl font-extrabold text-[#268A59]">
+                  {reverseDirection ? currentCard.englishWord : currentCard.vietnameseDefinition}
+                </p>
+
+                {currentCard.exampleSentence && (
+                  <p className="text-xs text-[#1D2420] italic max-w-md mx-auto pt-1 bg-white p-2.5 rounded-xl border border-[#E6EBE6]">
+                    "{currentCard.exampleSentence}"
+                  </p>
+                )}
+
+                {currentCard.notes && (
+                  <p className="text-[11px] text-[#69756D] italic">
+                    Ghi chú: {currentCard.notes}
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
-          {/* Card Bottom Hint */}
-          <div className="flex items-center justify-between text-xs text-[#69756D] pt-3 border-t border-[#E6EBE6]">
-            <span>Lượt xem: {currentCard.reviewCount} lần</span>
-            <span className="text-[#268A59] font-medium">
-              {isFlipped ? 'Đã lật xem nghĩa' : 'Chạm để lật'}
-            </span>
+          {/* Bottom Flip Button or Indicator */}
+          <div className="pt-3 border-t border-[#E6EBE6] flex items-center justify-between text-xs text-[#69756D]">
+            <span>Lượt xem: {currentCard.reviewCount || 0} lần</span>
+            {!isFlipped ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsFlipped(true);
+                }}
+                className="px-4 py-1.5 bg-[#173B2B] hover:bg-[#268A59] text-white rounded-xl font-bold transition text-xs shadow-2xs"
+              >
+                👀 Lật thẻ xem đáp án
+              </button>
+            ) : (
+              <span className="text-[#268A59] font-bold">
+                ✓ Đã xem đáp án — Chọn độ nhớ bên dưới
+              </span>
+            )}
           </div>
         </div>
       </div>
 
-      {/* RATING BUTTONS (3 OPTIONS REQUIRED) */}
-      <div className="mt-6 grid grid-cols-3 gap-3 sm:gap-4">
-        {/* Rating 1: Chưa nhớ */}
-        <button
-          type="button"
-          onClick={() => handleRate('forgot')}
-          className="flex flex-col items-center justify-center p-3.5 sm:p-4 bg-white border border-red-200 hover:bg-red-50 text-red-700 rounded-2xl shadow-xs transition-all active:scale-95"
-        >
-          <XCircle className="w-5 h-5 sm:w-6 sm:h-6 mb-1 text-red-600" />
-          <span className="text-xs sm:text-sm font-bold">Chưa nhớ</span>
-          <span className="text-[10px] text-red-500 font-mono hidden sm:inline">Phím 1</span>
-        </button>
+      {/* FOUR SELF-EVALUATION BUTTONS WITH SRS PREVIEWS (SHOWN ONLY AFTER FLIP) */}
+      {isFlipped ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 pt-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          {/* Button 1: Quên */}
+          <button
+            type="button"
+            onClick={() => handleRate('forgot')}
+            className="flex flex-col items-center justify-center p-3 rounded-2xl bg-white hover:bg-red-50 border border-red-200 text-red-700 shadow-2xs transition active:scale-95 cursor-pointer group"
+          >
+            <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+              <span className="text-sm">🔴</span>
+              <span>Quên</span>
+            </div>
+            <span className="text-[11px] text-red-600 font-mono mt-0.5 font-bold">
+              {intervalPreviews?.forgot.label || '10 phút'}
+            </span>
+            <span className="text-[9px] text-red-400 font-mono hidden sm:inline mt-0.5">Phím 1</span>
+          </button>
 
-        {/* Rating 2: Khó */}
-        <button
-          type="button"
-          onClick={() => handleRate('hard')}
-          className="flex flex-col items-center justify-center p-3.5 sm:p-4 bg-white border border-amber-200 hover:bg-amber-50 text-amber-800 rounded-2xl shadow-xs transition-all active:scale-95"
-        >
-          <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6 mb-1 text-amber-600" />
-          <span className="text-xs sm:text-sm font-bold">Khó</span>
-          <span className="text-[10px] text-amber-600 font-mono hidden sm:inline">Phím 2</span>
-        </button>
+          {/* Button 2: Khó */}
+          <button
+            type="button"
+            onClick={() => handleRate('hard')}
+            className="flex flex-col items-center justify-center p-3 rounded-2xl bg-white hover:bg-amber-50 border border-amber-200 text-amber-800 shadow-2xs transition active:scale-95 cursor-pointer group"
+          >
+            <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+              <span className="text-sm">🟠</span>
+              <span>Khó</span>
+            </div>
+            <span className="text-[11px] text-amber-700 font-mono mt-0.5 font-bold">
+              {intervalPreviews?.hard.label || '1 giờ'}
+            </span>
+            <span className="text-[9px] text-amber-500 font-mono hidden sm:inline mt-0.5">Phím 2</span>
+          </button>
 
-        {/* Rating 3: Đã nhớ */}
-        <button
-          type="button"
-          onClick={() => handleRate('remembered')}
-          className="flex flex-col items-center justify-center p-3.5 sm:p-4 bg-white border border-[#BDE5C8] hover:bg-[#E5F3E9] text-[#173B2B] rounded-2xl shadow-xs transition-all active:scale-95"
-        >
-          <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 mb-1 text-[#268A59]" />
-          <span className="text-xs sm:text-sm font-bold">Đã nhớ</span>
-          <span className="text-[10px] text-[#268A59] font-mono hidden sm:inline">Phím 3</span>
-        </button>
-      </div>
+          {/* Button 3: Nhớ */}
+          <button
+            type="button"
+            onClick={() => handleRate('remembered')}
+            className="flex flex-col items-center justify-center p-3 rounded-2xl bg-white hover:bg-emerald-50 border border-emerald-200 text-emerald-800 shadow-2xs transition active:scale-95 cursor-pointer group"
+          >
+            <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+              <span className="text-sm">🟢</span>
+              <span>Nhớ</span>
+            </div>
+            <span className="text-[11px] text-emerald-700 font-mono mt-0.5 font-bold">
+              {intervalPreviews?.remembered.label || '1 ngày'}
+            </span>
+            <span className="text-[9px] text-emerald-500 font-mono hidden sm:inline mt-0.5">Phím 3</span>
+          </button>
 
-      {/* Manual Step Navigation */}
-      <div className="mt-4 flex items-center justify-between text-xs text-[#69756D]">
+          {/* Button 4: Dễ */}
+          <button
+            type="button"
+            onClick={() => handleRate('easy')}
+            className="flex flex-col items-center justify-center p-3 rounded-2xl bg-white hover:bg-blue-50 border border-blue-200 text-blue-800 shadow-2xs transition active:scale-95 cursor-pointer group"
+          >
+            <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+              <span className="text-sm">🔵</span>
+              <span>Dễ</span>
+            </div>
+            <span className="text-[11px] text-blue-700 font-mono mt-0.5 font-bold">
+              {intervalPreviews?.easy.label || '3 ngày'}
+            </span>
+            <span className="text-[9px] text-blue-500 font-mono hidden sm:inline mt-0.5">Phím 4</span>
+          </button>
+        </div>
+      ) : (
+        <div className="text-center pt-2">
+          <button
+            type="button"
+            onClick={() => setIsFlipped(true)}
+            className="w-full py-3.5 bg-[#173B2B] hover:bg-[#268A59] text-white rounded-2xl font-bold transition text-xs shadow-xs cursor-pointer"
+          >
+            👀 Lật thẻ xem đáp án (Space)
+          </button>
+        </div>
+      )}
+
+      {/* Manual Step Navigation Bar */}
+      <div className="flex items-center justify-between text-xs text-[#69756D] pt-2">
         <button
           disabled={currentIndex === 0}
           onClick={() => {
@@ -619,18 +848,16 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
               setIsFlipped(false);
             }
           }}
-          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#E6EBE6] bg-white transition-colors ${
-            currentIndex === 0
-              ? 'opacity-40 cursor-not-allowed'
-              : 'hover:text-[#173B2B] hover:bg-[#FAFBF8]'
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-xl border border-[#E6EBE6] bg-white transition ${
+            currentIndex === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:text-[#173B2B]'
           }`}
         >
           <ArrowLeft className="w-3.5 h-3.5" />
           <span>Thẻ trước</span>
         </button>
 
-        <span className="font-mono tabular-nums text-xs">
-          Phím tắt: Space (Lật) · 1, 2, 3 (Đánh giá) · R (Nghe)
+        <span className="text-[11px] text-[#69756D] font-mono hidden sm:inline">
+          Phím tắt: Space (Lật) · 1, 2, 3, 4 (Đánh giá) · R (Phát âm)
         </span>
 
         <button
@@ -641,10 +868,8 @@ export const FlashcardStudy: React.FC<FlashcardStudyProps> = ({
               setIsFlipped(false);
             }
           }}
-          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#E6EBE6] bg-white transition-colors ${
-            currentIndex + 1 >= totalCards
-              ? 'opacity-40 cursor-not-allowed'
-              : 'hover:text-[#173B2B] hover:bg-[#FAFBF8]'
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-xl border border-[#E6EBE6] bg-white transition ${
+            currentIndex + 1 >= totalCards ? 'opacity-40 cursor-not-allowed' : 'hover:text-[#173B2B]'
           }`}
         >
           <span>Thẻ sau</span>

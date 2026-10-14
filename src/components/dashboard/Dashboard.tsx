@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Layers,
   BookOpen,
@@ -9,12 +9,14 @@ import {
   Trophy,
   UploadCloud,
   CheckCircle,
+  Clock,
 } from 'lucide-react';
 import { Deck, MascotTone, VocabularyItem, Achievement } from '../../types';
-import { DashboardStats } from '../../services/storage';
+import { DashboardStats, getReviewRecords, getLearningSessions } from '../../services/storage';
+import { getDueWords } from '../../services/srs';
 import { CapTongBubble } from '../mascot/CapTongBubble';
 import { VuonNocHeatmap } from './VuonNocHeatmap';
-import { getRankFromXP, getRankProgressInfo } from '../../services/rank';
+import { getRankFromXP, getDivisionProgress, getXPRequiredForPromotion, getNextRank } from '../../services/rank';
 
 interface DashboardProps {
   stats: DashboardStats;
@@ -24,6 +26,7 @@ interface DashboardProps {
   onCreateDeck: () => void;
   onOpenDeck: (deckId: string) => void;
   onStudyDeck: (deckId: string) => void;
+  onOpenDailyReview?: () => void;
   onQuickAdd: () => void;
   onGoToDecks: () => void;
   onOpenRank: () => void;
@@ -41,6 +44,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onCreateDeck,
   onOpenDeck,
   onStudyDeck,
+  onOpenDailyReview,
   onQuickAdd,
   onGoToDecks,
   onOpenRank,
@@ -49,6 +53,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
   achievements = [],
   onOpenAchievements,
 }) => {
+  const currentRank = getRankFromXP(stats.totalXp);
+  const progress = getDivisionProgress(stats.totalXp);
+  const xpNeeded = getXPRequiredForPromotion(stats.totalXp);
+  const nextRankName = getNextRank(stats.totalXp);
+
+  const dueCount = useMemo(() => {
+    const revs = getReviewRecords();
+    const sess = getLearningSessions();
+    return getDueWords(undefined, revs, sess, vocabulary).length;
+  }, [vocabulary]);
+
   return (
     <div className="max-w-7xl mx-auto py-6 sm:py-8 px-4 sm:px-6 lg:px-8 space-y-8">
       {/* 1. HERO & WELCOME BANNER WITH CẠP TỔNG MASCOT */}
@@ -92,6 +107,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </button>
             )}
 
+            {dueCount > 0 && onOpenDailyReview && (
+              <button
+                onClick={onOpenDailyReview}
+                className="inline-flex items-center gap-2 px-4 py-3 text-sm font-bold text-[#173B2B] bg-[#E5F3E9] hover:bg-[#d5ebdc] border border-[#BDE5C8] rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                <Clock className="w-4 h-4 text-[#268A59]" />
+                <span>Ôn {dueCount} từ đến hạn (SRS)</span>
+              </button>
+            )}
+
             <button
               onClick={onQuickAdd}
               className="inline-flex items-center gap-1.5 px-4 py-3 text-sm font-semibold text-[#173B2B] hover:bg-[#FAFBF8] border border-[#E6EBE6] bg-white rounded-xl transition-colors"
@@ -106,6 +131,65 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="lg:col-span-5 flex flex-col justify-center">
           <CapTongBubble category="WELCOME" tone={tone} />
         </div>
+      </div>
+
+      {/* 1.5 CLICKABLE RANK & XP PROGRESSION CARD */}
+      <div
+        onClick={onOpenRank}
+        className="bg-gradient-to-r from-emerald-900 to-[#173B2B] text-white rounded-3xl p-6 sm:p-7 shadow-lg cursor-pointer hover:shadow-xl transition-all group relative overflow-hidden border border-emerald-700/50"
+      >
+        <div className="absolute right-4 -bottom-6 text-7xl opacity-20 pointer-events-none group-hover:scale-110 transition-transform">
+          {currentRank.badge}
+        </div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 relative z-10">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="px-2.5 py-0.5 rounded-full bg-amber-400/20 text-amber-300 text-xs font-bold uppercase tracking-wider border border-amber-400/30">
+                Bậc Rank Hiện Tại
+              </span>
+              <span className="text-xs text-emerald-300 font-mono font-bold">
+                {stats.totalXp} Nọc XP
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-4xl">{currentRank.badge}</span>
+              <div>
+                <h3 className="text-2xl font-black">{currentRank.fullName}</h3>
+                <p className="text-xs text-emerald-200 mt-0.5">
+                  "{currentRank.description}" (Click xem 15 bậc rank ➔)
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex sm:flex-col items-center sm:items-end justify-between bg-white/10 rounded-2xl p-4 backdrop-blur-xs border border-white/15 gap-2">
+            <div>
+              <p className="text-[10px] uppercase font-bold text-emerald-300">Tiến độ thăng hạng</p>
+              <p className="text-sm font-bold text-amber-300 font-mono">{xpNeeded} XP đến {nextRankName}</p>
+            </div>
+            <div className="text-right">
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-white bg-emerald-700/80 px-2.5 py-1 rounded-xl">
+                🔥 Streak: {stats.streak.currentStreak} ngày
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Division Progress bar */}
+        {currentRank.tierIndex < 14 && (
+          <div className="mt-5 pt-3 border-t border-white/15">
+            <div className="flex justify-between text-xs text-emerald-200 mb-1">
+              <span>Tiến độ phân đoạn</span>
+              <span className="font-mono font-bold text-amber-300">{progress.toFixed(0)}%</span>
+            </div>
+            <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-400 rounded-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 2. REAL SUMMARY METRIC CARDS (NO FAKE DATA) */}
@@ -186,40 +270,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Metric 4: Nọc XP & Rank */}
-        {(() => {
-          const rankInfo = getRankFromXP(stats.totalXp);
-          const progressInfo = getRankProgressInfo(stats.totalXp);
-          return (
-            <div 
-              onClick={onOpenRank}
-              className="bg-[#FFFFFF] border border-[#E6EBE6] hover:border-[#268A59]/50 rounded-2xl p-5 shadow-xs flex flex-col justify-between cursor-pointer transition group"
-            >
-              <div className="flex items-center justify-between text-xs font-semibold text-[#69756D]">
-                <span>Cấp Bậc & Điểm Nọc</span>
-                <span className="text-[#268A59] font-bold flex items-center gap-1 group-hover:underline">
-                  {rankInfo.badge} {rankInfo.fullName}
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline gap-2">
-                <span className="text-3xl sm:text-4xl font-black text-[#268A59] tabular-nums font-mono">
-                  +{stats.totalXp}
-                </span>
-                <span className="text-xs text-[#69756D]">tổng XP</span>
-              </div>
-              <div className="mt-3 pt-3 border-t border-[#E6EBE6] text-xs text-[#69756D] flex items-center justify-between">
-                <span>
-                  {progressInfo.isMaxTier
-                    ? 'Đại Đế Cạp Cạp'
-                    : `${progressInfo.xpEarnedInDivision} / ${progressInfo.totalDivisionWidth} XP`}
-                </span>
-                <span className="font-bold text-[#D9AA54] flex items-center gap-1">
-                  🔥 {stats.streak.currentStreak} ngày
-                </span>
-              </div>
-            </div>
-          );
-        })()}
+        {/* Metric 4: Nọc XP & Streak */}
+        <div className="bg-[#FFFFFF] border border-[#E6EBE6] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-xs font-semibold text-[#69756D]">
+            <span>Điểm Nọc & Chuỗi</span>
+            <span className="text-[#268A59] font-bold">XP & Streak</span>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl sm:text-4xl font-black text-[#268A59] tabular-nums font-mono">
+              +{stats.totalXp}
+            </span>
+            <span className="text-xs text-[#69756D]">tổng XP</span>
+          </div>
+          <div className="mt-3 pt-3 border-t border-[#E6EBE6] text-xs text-[#69756D] flex items-center justify-between">
+            <span>Hôm nay: <strong className="text-[#173B2B] font-mono">+{stats.todayXp}</strong> / {stats.dailyXpCap} XP</span>
+            <span className="font-bold text-[#D9AA54] flex items-center gap-1">
+              🔥 {stats.streak.currentStreak} ngày
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* 2.4 PERSONAL ACHIEVEMENTS SUMMARY CARD */}
@@ -368,9 +437,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
         )}
       </div>
 
-      {/* 4. FRIENDS LEADERBOARD CALLOUT BANNER */}
+      {/* 4. LEADERBOARD BANNER CALLOUT */}
       <div 
-        onClick={onGoToLeaderboard || onOpenRank}
+        onClick={onGoToLeaderboard}
         className="bg-gradient-to-r from-emerald-950 to-[#173B2B] text-white border border-emerald-800/60 rounded-3xl p-6 sm:p-7 hover:border-emerald-500 cursor-pointer transition-all group shadow-md hover:shadow-lg"
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5">
@@ -381,34 +450,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div>
               <div className="flex items-center gap-2.5">
                 <h3 className="text-base sm:text-lg font-black tracking-tight text-white group-hover:text-emerald-300 transition-colors">
-                  Bảng Phong Thần Hội Bạn (5–30 Người) — So Kè Điểm Nọc XP
+                  Bảng Phong Thần — Thi Đua Nọc XP & Streak Cùng Chiến Hữu
                 </h3>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 bg-emerald-900/80 border border-emerald-600/50 px-2 py-0.5 rounded-full">
-                  M4.2 Live
+                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 bg-amber-950/80 border border-amber-600/50 px-2 py-0.5 rounded-full">
+                  M4.2B Live
                 </span>
               </div>
               <p className="mt-1.5 text-xs text-emerald-200/80 leading-relaxed max-w-2xl">
-                Nọc XP là thước đo duy nhất cho cấp bậc và độ chăm chỉ của bạn. Luyện từ vựng, duy trì chuỗi học và so kè thứ hạng vui nhộn cùng hội bạn thân!
+                So kè tổng Nọc XP và chuỗi ngày học liên tục với các chiến hữu. Càng học nhiều, rank càng cao!
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
-            {onOpenRank && (
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenRank();
-                }}
-                className="px-4 py-2.5 bg-emerald-900/90 hover:bg-emerald-800 text-emerald-200 hover:text-white font-bold text-xs rounded-xl border border-emerald-700/60 transition flex items-center gap-1.5"
-              >
-                <span>Xem 15 Bậc Rank</span>
-              </button>
-            )}
             <button 
               onClick={(e) => {
                 e.stopPropagation();
                 if (onGoToLeaderboard) onGoToLeaderboard();
-                else onOpenRank();
               }}
               className="px-5 py-2.5 bg-[#268A59] hover:bg-[#2fa76c] active:bg-[#1f734a] text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center gap-1.5"
             >

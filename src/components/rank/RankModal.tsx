@@ -1,6 +1,6 @@
 import React from 'react';
-import { X, Trophy, Sparkles, TrendingUp } from 'lucide-react';
-import { getAllRanks, getRankFromXP, getRankProgressInfo } from '../../services/rank';
+import { X, Sparkles, AlertCircle } from 'lucide-react';
+import { getAllRanks, getRankFromXP, getDivisionProgress, getXPRequiredForPromotion, getNextRank } from '../../services/rank';
 
 interface RankModalProps {
   isOpen: boolean;
@@ -16,8 +16,10 @@ export const RankModal: React.FC<RankModalProps> = ({
   if (!isOpen) return null;
 
   const allRanks = getAllRanks();
-  const progressInfo = getRankProgressInfo(totalXp);
-  const { currentRank, nextRankName, xpEarnedInDivision, xpNeededForNextDivision, totalDivisionWidth, percentProgress, isMaxTier } = progressInfo;
+  const currentRank = getRankFromXP(totalXp);
+  const progress = getDivisionProgress(totalXp);
+  const xpNeeded = getXPRequiredForPromotion(totalXp);
+  const nextRankName = getNextRank(totalXp);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-fadeIn">
@@ -29,8 +31,8 @@ export const RankModal: React.FC<RankModalProps> = ({
               👑
             </span>
             <div>
-              <h2 className="text-xl font-black text-gray-900">Bảng Cấp Bậc 15 Cấp Cạp Cạp</h2>
-              <p className="text-xs text-gray-500">Milestone 4.2 — Điểm Nọc XP trực tiếp xác định Rank</p>
+              <h2 className="text-xl font-black text-gray-900">Bảng Xếp Hạng & Cấp Bậc 15 Cấp Cạp Cạp</h2>
+              <p className="text-xs text-gray-500">Milestone 4.2A — Tiến hóa rank trực tiếp bằng Nọc XP</p>
             </div>
           </div>
           <button
@@ -47,61 +49,63 @@ export const RankModal: React.FC<RankModalProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-300 text-xs font-bold uppercase tracking-wider border border-emerald-400/30">
-                  Cấp Bậc Hiện Tại
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-400/20 text-amber-300 text-xs font-bold uppercase tracking-wider border border-amber-400/30">
+                  Cấp bậc: {currentRank.tierName}
                 </span>
-                <span className="text-xs text-emerald-200">Bậc {currentRank.tierIndex + 1}/15</span>
+                {currentRank.division && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-white/10 text-emerald-200 text-xs font-bold">
+                    Division {currentRank.division}
+                  </span>
+                )}
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-4xl">{currentRank.badge}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-3xl">{currentRank.badge}</span>
                 <div>
-                  <h3 className="text-2xl font-black text-amber-300">{currentRank.fullName}</h3>
+                  <h3 className="text-2xl font-black">{currentRank.fullName}</h3>
                   <p className="text-xs text-emerald-200 mt-0.5">
                     "{currentRank.description}"
                   </p>
                 </div>
               </div>
             </div>
-            <div className="flex items-center justify-between sm:justify-end bg-white/10 rounded-2xl p-4 backdrop-blur-xs border border-white/10 gap-4">
+            <div className="flex sm:flex-col items-center sm:items-end justify-between bg-white/10 rounded-xl p-3 backdrop-blur-xs border border-white/10 gap-2">
               <div>
-                <p className="text-[10px] uppercase font-bold text-emerald-300">Tổng Điểm Nọc (XP)</p>
-                <p className="text-2xl font-black font-mono text-amber-300 tabular-nums">+{totalXp} XP</p>
+                <p className="text-[10px] uppercase font-bold text-emerald-300">Tổng Nọc XP</p>
+                <p className="text-xl font-black font-mono text-amber-300">{totalXp} XP</p>
               </div>
             </div>
           </div>
 
           {/* Division progress bar */}
-          {!isMaxTier ? (
-            <div className="mt-5 pt-3 border-t border-white/15">
-              <div className="flex justify-between text-xs text-emerald-200 mb-1.5">
-                <span>
-                  Tiến độ: <strong className="text-white font-mono">{xpEarnedInDivision} / {totalDivisionWidth} XP</strong> đến <strong>{nextRankName}</strong>
-                </span>
-                <span className="font-mono font-bold text-amber-300">Còn {xpNeededForNextDivision} XP nữa</span>
+          {currentRank.tierIndex < 14 && (
+            <div className="mt-4 pt-3 border-t border-white/15">
+              <div className="flex justify-between text-xs text-emerald-200 mb-1">
+                <span>Tiến độ lên {nextRankName}</span>
+                <span className="font-mono font-bold text-amber-300">{xpNeeded} XP nữa</span>
               </div>
-              <div className="h-2.5 w-full bg-white/15 rounded-full overflow-hidden">
+              <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
                 <div 
                   className="h-full bg-amber-400 rounded-full transition-all duration-500" 
-                  style={{ width: `${percentProgress}%` }}
+                  style={{ width: `${progress}%` }}
                 />
               </div>
             </div>
-          ) : (
-            <div className="mt-4 pt-3 border-t border-white/15 text-xs text-amber-300 font-bold flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              <span>Đại ca đã đạt cảnh giới tối cao Đại Đế Cạp Cạp! Cả từ điển đều run rẩy!</span>
-            </div>
           )}
+
+          <div className="mt-4 pt-3 border-t border-white/15 flex items-center gap-2 text-xs text-emerald-200">
+            <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>Mỗi hoạt động học tập và ôn tập SRS tích lũy Nọc XP giúp đại ca thăng tiến tự động không tụt rank!</span>
+          </div>
         </div>
 
-        {/* Philosophy Card */}
-        <div className="mb-6 rounded-2xl border border-emerald-100 bg-[#E5F3E9]/60 p-4">
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-lg">🌿</span>
-            <h4 className="font-bold text-emerald-950 text-sm">Học Từ Vựng Tích Lũy — Tự Động Thăng Cấp</h4>
+        {/* XP Explanation */}
+        <div className="mb-6 rounded-2xl border border-emerald-100 bg-emerald-50/50 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-lg">⭐</span>
+            <h4 className="font-bold text-emerald-900 text-sm">Hệ Thống Rank Theo Nọc XP</h4>
           </div>
-          <p className="text-xs text-emerald-900 leading-relaxed">
-            Học tập thực chất và bền bỉ: hoàn thành bài tập, ôn thẻ Flashcard, luyện gõ từ và đặt câu AI để tích lũy Nọc XP. Rank của đại ca chỉ tăng hoặc giữ nguyên khi bạn học, không bao giờ bị trừ điểm vô lý!
+          <p className="text-xs text-emerald-800 leading-relaxed">
+            Rẻ Jack bắt đầu từ 0 XP. 3 phân đoạn III → II → I cho mỗi bậc. Tích lũy XP không bao giờ bị trừ hay reset khi thăng hạng.
           </p>
         </div>
 
@@ -151,7 +155,7 @@ export const RankModal: React.FC<RankModalProps> = ({
 
         {/* Footer */}
         <div className="mt-6 pt-4 border-t border-gray-100 flex items-center justify-between">
-          <p className="text-xs text-gray-400">Cạp Cạp Học Tiếng Anh — Cấp bậc đồng bộ điểm Nọc XP</p>
+          <p className="text-xs text-gray-400">Cạp Cạp Học Tiếng Anh — M4.2A Rank Progression from XP</p>
           <button
             onClick={onClose}
             className="rounded-xl bg-[#173B2B] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#268A59] transition"
